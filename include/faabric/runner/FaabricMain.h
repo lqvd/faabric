@@ -5,6 +5,7 @@
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/snapshot/SnapshotServer.h>
 #include <faabric/state/StateServer.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/transport/PointToPointServer.h>
 #include <faabric/util/config.h>
 
@@ -26,6 +27,10 @@ class FaabricMain
 
     void startPointToPointServer();
 
+    void startRpcServer();
+    void registerRpcHandler(const std::string& name,
+                            faabric::rpc::RpcHandler handler);
+
     void shutdown();
 
   private:
@@ -33,5 +38,6 @@ class FaabricMain
     faabric::scheduler::FunctionCallServer functionServer;
     faabric::snapshot::SnapshotServer snapshotServer;
     faabric::transport::PointToPointServer pointToPointServer;
+    faabric::rpc::RpcServer rpcServer;
 };
 }

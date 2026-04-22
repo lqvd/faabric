@@ -34,6 +34,7 @@ message BatchExecuteRequest {
         THREADS = 1;
         PROCESSES = 2;
         MIGRATION = 3;
+        RPC = 4;
     }
 
     BatchExecuteType type = 5;
@@ -149,6 +150,11 @@ message Message {
     // OpenMP
     bool isOmp = 39;
     int32 ompNumThreads = 40;
+
+    // RPC
+    bool isRpc = 41 [json_name = "rpc"];
+    string rpcService = 42;
+    int32 rpcReplyId = 43;
 }
 
 // ---------------------------------------------
@@ -239,4 +245,28 @@ message PendingMigration {
     int32 groupIdx = 3;
     string srcHost = 4;
     string dstHost = 5;
+}
+
+// ---------------------------------------------
+// RPC
+// ---------------------------------------------
+
+message RpcChannelState {
+    int32 channelId = 1;
+    string targetUri = 2;
+}
+
+message RpcMigrationContext {
+    repeated RpcChannelState channels = 1;
+}
+
+message RpcRequest {
+  string method = 1;
+  bytes payload = 2;
+}
+
+message RpcResponse {
+  int32 statusCode = 1;
+  bytes payload = 2;
+  string errorMessage = 3;
 }

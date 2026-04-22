@@ -26,4 +26,10 @@
 #define PLANNER_SYNC_PORT 8012
 #define PLANNER_INPROC_LABEL "planner"
 
+// Faabric-internal RPC: synchronous unary calls between Faasm hosts.
+// URI scheme: faabric://host[:port]  (port defaults to RPC_SYNC_PORT)
+#define RPC_SYNC_PORT 8013
+#define RPC_ASYNC_PORT 8014
+#define RPC_INPROC_LABEL "rpc"
+
 #define MPI_BASE_PORT 8020

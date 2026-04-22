@@ -112,6 +112,7 @@ add_subdirectory(src/mpi)
 add_subdirectory(src/planner)
 add_subdirectory(src/proto)
 add_subdirectory(src/redis)
+add_subdirectory(src/rpc)
 add_subdirectory(src/runner)
 add_subdirectory(src/scheduler)
 add_subdirectory(src/snapshot)
@@ -138,6 +139,7 @@ add_library(faabric
     $<TARGET_OBJECTS:planner_obj>
     $<TARGET_OBJECTS:proto_obj>
     $<TARGET_OBJECTS:redis_obj>
+    $<TARGET_OBJECTS:rpc_obj>
     $<TARGET_OBJECTS:runner_obj>
     $<TARGET_OBJECTS:scheduler_obj>
     $<TARGET_OBJECTS:scheduling_util_obj>

@@ -385,6 +385,24 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                   msg);
             }
 
+            if (isMigration && msg.isrpc() &&
+                !task.req->contextdata().empty()) {
+                faabric::RpcMigrationContext rpcMigCtx;
+                if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
+                                              task.req->contextdata().size())) {
+                    throw std::runtime_error(
+                      "Failed to parse RpcMigrationContext");
+                }
+
+                std::vector<std::pair<int32_t, std::string>> channels;
+                for (const auto& ch : rpcMigCtx.channels()) {
+                    channels.emplace_back(ch.channelid(), ch.targeturi());
+                }
+
+                ExecutorContext::get()->getRpcContext().deserializeChannels(
+                  channels);
+            }
+
             returnValue =
               executeTask(threadPoolIdx, task.messageIndex, task.req);
         } catch (const faabric::util::FunctionMigratedException& ex) {

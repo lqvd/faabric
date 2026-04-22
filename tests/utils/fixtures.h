@@ -549,6 +549,88 @@ class RemoteMpiTestFixture : public MpiBaseTestFixture
     faabric::mpi::MpiWorld otherWorld;
 };
 
+class RpcTestFixture : public ConfFixture
+{
+  public:
+    RpcTestFixture()
+    {
+        conf.endpointHost = "127.0.0.1";
+        conf.overrideCpuCount = 1;
+    }
+
+    ~RpcTestFixture() { ctx.clear(); }
+
+  protected:
+    struct RpcCallResult
+    {
+        int status = -1;
+        std::string response;
+        std::string error;
+    };
+
+    faabric::rpc::RpcContext ctx;
+
+    int nextPort()
+    {
+        static std::atomic<int> p = 19000;
+        return p.fetch_add(1);
+    }
+
+    std::string makeFaabricUri(int port) const
+    {
+        return "faabric://127.0.0.1:" + std::to_string(port);
+    }
+
+    std::jthread startClientCall(const std::string& targetUri,
+                                 const std::string& method,
+                                 const std::string& payload,
+                                 RpcCallResult& out)
+    {
+        return std::jthread([&, targetUri, method, payload] {
+            try {
+                int32_t channelId = ctx.createChannel(targetUri);
+                auto channel = ctx.getChannel(channelId);
+
+                std::vector<uint8_t> outBuffer;
+                out.status = channel->syncCall(
+                  method,
+                  reinterpret_cast<const uint8_t*>(payload.data()),
+                  payload.size(),
+                  outBuffer);
+
+                out.response.assign(outBuffer.begin(), outBuffer.end());
+                ctx.closeChannel(channelId);
+            } catch (const std::exception& ex) {
+                out.error = ex.what();
+            }
+        });
+    }
+
+    void sendProtoResponse(faabric::transport::SyncRecvMessageEndpoint& server,
+                           int statusCode,
+                           const std::string& payload)
+    {
+        faabric::RpcResponse resp;
+        resp.set_statuscode(statusCode);
+        resp.set_payload(payload);
+
+        std::string serialised;
+        REQUIRE(resp.SerializeToString(&serialised));
+
+        server.sendResponse(NO_HEADER,
+                            reinterpret_cast<const uint8_t*>(serialised.data()),
+                            serialised.size());
+    }
+
+    void sendRawResponse(faabric::transport::SyncRecvMessageEndpoint& server,
+                         const std::string& raw)
+    {
+        server.sendResponse(NO_HEADER,
+                            reinterpret_cast<const uint8_t*>(raw.data()),
+                            raw.size());
+    }
+};
+
 class BatchSchedulerFixture : public ConfFixture
 {
   public:

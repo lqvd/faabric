@@ -2,6 +2,7 @@
 
 #include <faabric/executor/Executor.h>
 #include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcContext.h>
 #include <faabric/util/exception.h>
 
 namespace faabric::executor {
@@ -54,9 +55,12 @@ class ExecutorContext
 
     int getMsgIdx() { return msgIdx; }
 
+    faabric::rpc::RpcContext& getRpcContext() { return rpcContext; }
+
   private:
     Executor* executor = nullptr;
     std::shared_ptr<faabric::BatchExecuteRequest> req = nullptr;
     int msgIdx = 0;
+    faabric::rpc::RpcContext rpcContext;
 };
 }

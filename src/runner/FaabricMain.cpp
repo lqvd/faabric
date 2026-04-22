@@ -1,5 +1,6 @@
 #include <faabric/executor/ExecutorFactory.h>
 #include <faabric/planner/PlannerClient.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/runner/FaabricMain.h>
 #include <faabric/scheduler/FunctionCallServer.h>
 #include <faabric/util/config.h>
@@ -36,6 +37,9 @@ void FaabricMain::startBackground()
 
     // Work sharing
     startFunctionCallServer();
+
+    // Rpc server
+    startRpcServer();
 
     PROF_SUMMARY
 }
@@ -86,6 +90,19 @@ void FaabricMain::startStateServer()
     stateServer.start();
 }
 
+void FaabricMain::startRpcServer()
+{
+    SPDLOG_INFO("Starting RPC server");
+    rpcServer.start();
+}
+
+void FaabricMain::registerRpcHandler(const std::string& name,
+                                     faabric::rpc::RpcHandler handler)
+{
+    rpcServer.registerHandler(name, std::move(handler));
+}
+
+
 void FaabricMain::shutdown()
 {
     SPDLOG_INFO("Removing from global working set");
@@ -101,6 +118,9 @@ void FaabricMain::shutdown()
 
     SPDLOG_INFO("Waiting for the point-to-point server to finish");
     pointToPointServer.stop();
+
+    SPDLOG_INFO("Waiting for the rpc server to finish");
+    rpcServer.stop();
 
     auto& sch = faabric::scheduler::getScheduler();
     sch.shutdown();
