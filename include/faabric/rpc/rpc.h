@@ -53,4 +53,14 @@ int Rpc_UnaryCall(Rpc_ChannelId channelId,
 }
 #endif
 
+namespace faabric::rpc {
+
+enum RpcType
+{
+    INVOKE = 0,
+    RESPONSE = 1,
+};
+
+}   // namespace faabric::rpc
+
 #endif

@@ -1,12 +1,26 @@
 #pragma once
 
-#include <faabric/rpc/IChannel.h>
+#include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcClientTransport.h>
 #include <faabric/util/concurrent_map.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace faabric::rpc {
+
+struct ChannelInfo
+{
+    std::string targetUri;
+    bool isFaabric;
+    std::string host;
+    int port;
+};
 
 enum RpcContextMode
 {
@@ -14,53 +28,63 @@ enum RpcContextMode
     QUIESCE = 1,
 };
 
-/**
- * RpcContext — per-Wasm-execution handle table mapping int32 channel IDs to
- * IChannel implementations.
- *
- * URI routing in createChannel():
- *   faabric://host      -> FaabricChannel on port RPC_SYNC_PORT (nng)
- *   faabric://host:port -> FaabricChannel on the given port (nng)
- *   <anything else>     -> ExternalChannel (throws for now)
- */
 class RpcContext
 {
   public:
-    RpcContext() = default;
+    RpcContext();
 
-    // Factory: parse the URI scheme and create the right IChannel.
     int32_t createChannel(const std::string& targetUri);
-
-    std::shared_ptr<IChannel> getChannel(int32_t channelId);
-
+    ChannelInfo getChannel(int32_t channelId);
     void closeChannel(int32_t channelId);
-
-    // Drop all channels.
     void clear();
 
     std::vector<std::pair<int32_t, std::string>> serializeChannels() const;
-    void deserializeChannels(const std::vector<std::pair<int32_t, std::string>>& data);
+    void deserializeChannels(
+      const std::vector<std::pair<int32_t, std::string>>& data);
 
-    // Enter quiescent mode and set context mode to QUIESCE.
+    uint32_t startUnary(int32_t channelId,
+                        const std::string& method,
+                        const uint8_t* reqBuffer,
+                        int32_t reqLength);
+
+    bool testResponse(uint32_t requestId);
+    bool getResponse(uint32_t requestId, faabric::RpcResponse& out);
+    bool hasPendingRequest(uint32_t requestId);
+    void eraseRequest(uint32_t requestId);
+
     void beginQuiesce();
     void awaitQuiesced(uint32_t timeoutMs);
     void endQuiesce();
 
-    // Call before starting an RPC. If context mode is RUNNING, register that
-    // an in-flight call is taking place and return true. If context mode is
-    // QUIESCE, return false.
     bool tryEnterCall();
-    // Decrement in-flight call count.
     void exitCall();
 
+    void onResponseReceived(const faabric::RpcResponse& resp);
+
   private:
-    std::atomic<int32_t> nextId{1};
-    faabric::util::ConcurrentMap<int32_t, std::shared_ptr<IChannel>> channels;
+    std::atomic<int32_t> nextChannelId{ 1 };
+    std::atomic<uint32_t> nextRequestId{ 1 };
 
-    std::atomic<RpcContextMode> context{RUNNING};
-    std::atomic<uint32_t> inFlightCalls{0};
+    faabric::util::ConcurrentMap<int32_t, ChannelInfo> channels;
 
+    std::atomic<RpcContextMode> context{ RUNNING };
+    std::atomic<uint32_t> inFlightCalls{ 0 };
+
+    mutable std::mutex quiesceMx;
     std::condition_variable quiesceCv;
+
+    template <typename TFrom>
+    using ConcurrentMapToTransport =
+        faabric::util::ConcurrentMap<TFrom,
+                                     std::shared_ptr<RpcClientTransport>>;
+    ConcurrentMapToTransport<std::string> targetToTransport;
+    ConcurrentMapToTransport<uint32_t> requestToTransport;
+
+    static ChannelInfo parseChannelInfo(const std::string& targetUri);
+    static std::string makeTargetKey(const ChannelInfo& info);
+
+    std::shared_ptr<RpcClientTransport> getOrCreateTransport(
+      const ChannelInfo& info);
 };
 
 RpcContext& getExecutingRpcContext();

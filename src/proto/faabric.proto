@@ -263,10 +263,14 @@ message RpcMigrationContext {
 message RpcRequest {
   string method = 1;
   bytes payload = 2;
+  string replyhost = 4;
+  int32 replyport = 5;
+  uint32 requestId = 6;
 }
 
 message RpcResponse {
   int32 statusCode = 1;
   bytes payload = 2;
-  string errorMessage = 3;
+  uint32 requestId = 3;
+  string errorMessage = 4;
 }

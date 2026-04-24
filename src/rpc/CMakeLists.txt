@@ -1,7 +1,6 @@
 faabric_lib(rpc
-    ExternalChannel.cpp
-    FaabricChannel.cpp
     rpc.cpp
+    RpcClientTransport.cpp
     RpcContext.cpp
     RpcServer.cpp
 )
