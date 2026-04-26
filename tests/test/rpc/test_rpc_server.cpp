@@ -1,71 +1,336 @@
 #include <catch2/catch.hpp>
+
+#include "fixtures.h"
+
+#include <faabric/rpc/rpc.h>
+#include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcServer.h>
-#include <faabric/rpc/FaabricChannel.h>
 #include <faabric/proto/faabric.pb.h>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
 
 using namespace faabric::rpc;
 
 namespace tests {
 
-TEST_CASE("Test RPC server routing and execution", "[rpc][server]")
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server routes to registered handler",
+                 "[rpc][server]")
 {
-    // 1. Spin up the server
-    RpcServer server;
-    
-    // 2. Register a dummy handler for a specific method
     bool handlerCalled = false;
-    server.registerHandler("/pkg.Svc/DummyMethod", 
-        [&handlerCalled](const uint8_t* reqData, size_t reqLen, std::vector<uint8_t>& respData) {
-            handlerCalled = true;
-            
-            // Dummy logic: just return an EmptyResponse
-            faabric::EmptyResponse resp;
-            auto size = resp.ByteSizeLong();
-            respData.resize(size);
-            resp.SerializeToArray(respData.data(), size);
-            
-            return Rpc_Status{ Rpc_StatusCode::OK, "" };
-        });
+    registerHandler("/pkg.Svc/Method",
+      [&](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          handlerCalled = true;
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
 
-    server.start(); // Starts the background listening threads
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Method");
 
-    // 3. Create a channel pointing to this host (the server we just started)
-    FaabricChannel channel("localhost");
-
-    // 4. Send a dummy payload
-    std::string method = "/pkg.Svc/DummyMethod";
-    std::string payload = "test data";
-    std::vector<uint8_t> outBuffer;
-
-    int status = channel.syncCall(
-        method,
-        reinterpret_cast<const uint8_t*>(payload.data()),
-        payload.size(),
-        outBuffer
-    );
-
-    // 5. Verify the RPC Server correctly routed the request and returned OK
-    REQUIRE(status == Rpc_StatusCode::OK);
     REQUIRE(handlerCalled);
-
-    server.stop();
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    ctx->closeChannel(ch);
 }
 
-TEST_CASE("Test RPC server handles missing methods correctly", "[rpc][server]")
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server returns UNIMPLEMENTED for unknown method",
+                 "[rpc][server]")
 {
-    RpcServer server;
-    server.start();
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/missing/method");
 
-    FaabricChannel channel("localhost");
-    std::vector<uint8_t> outBuffer;
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::UNIMPLEMENTED);
+    REQUIRE(resp.payload().empty());
+    ctx->closeChannel(ch);
+}
 
-    // Send a method that hasn't been registered
-    int status = channel.syncCall("/missing/method", nullptr, 0, outBuffer);
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server routes multiple methods independently",
+                 "[rpc][server]")
+{
+    std::atomic<int> calledA{ 0 }, calledB{ 0 };
+    registerHandler("/pkg.Svc/MethodA",
+      [&](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          calledA++;
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+    registerHandler("/pkg.Svc/MethodB",
+      [&](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          calledB++;
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
 
-    // The RpcServer should trap this and return UNIMPLEMENTED without crashing
-    REQUIRE(status == Rpc_StatusCode::UNIMPLEMENTED);
+    int32_t ch = localChannel();
+    auto respA = doCall(ch, "/pkg.Svc/MethodA");
+    auto respB = doCall(ch, "/pkg.Svc/MethodB");
 
-    server.stop();
+    REQUIRE(calledA == 1);
+    REQUIRE(calledB == 1);
+    REQUIRE(respA.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(respB.statuscode() == Rpc_StatusCode::OK);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server last registration wins for duplicate method",
+                 "[rpc][server]")
+{
+    registerHandler("/pkg.Svc/Method",
+      [](const uint8_t*, size_t, std::vector<uint8_t>& out) {
+          out = { 'A' };
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+    registerHandler("/pkg.Svc/Method",
+      [](const uint8_t*, size_t, std::vector<uint8_t>& out) {
+          out = { 'B' };
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Method");
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(resp.payload() == "B");
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server delivers request payload to handler",
+                 "[rpc][server]")
+{
+    std::string captured;
+    registerHandler("/pkg.Svc/Echo",
+      [&](const uint8_t* data, size_t len, std::vector<uint8_t>&) {
+          captured.assign(reinterpret_cast<const char*>(data), len);
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    doCall(ch, "/pkg.Svc/Echo", "hello server");
+
+    REQUIRE(captured == "hello server");
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server echoes response payload to caller",
+                 "[rpc][server]")
+{
+    registerHandler("/pkg.Svc/Echo",
+      [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
+          out.assign(data, data + len);
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Echo", "echo me");
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(resp.payload() == "echo me");
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server produces no payload when handler writes nothing",
+                 "[rpc][server]")
+{
+    registerHandler("/pkg.Svc/Noop",
+      [](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Noop");
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(resp.payload().empty());
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server receives zero length when payload is empty",
+                 "[rpc][server]")
+{
+    size_t receivedLen = 1;
+    registerHandler("/pkg.Svc/Noop",
+      [&](const uint8_t*, size_t len, std::vector<uint8_t>&) {
+          receivedLen = len;
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    doCall(ch, "/pkg.Svc/Noop");
+
+    REQUIRE(receivedLen == 0);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server preserves binary payload bytes",
+                 "[rpc][server]")
+{
+    const std::string reqPayload("\x00\x01\x02\x7f\x80\xff", 6);
+    registerHandler("/pkg.Svc/Binary",
+      [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
+          out.assign(data, data + len);
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Binary", reqPayload);
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(resp.payload() == reqPayload);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server handles large payload",
+                 "[rpc][server]")
+{
+    std::string reqPayload(1024 * 1024, '\0');
+    for (size_t i = 0; i < reqPayload.size(); i++)
+        reqPayload[i] = static_cast<char>(i % 251);
+
+    registerHandler("/pkg.Svc/Large",
+      [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
+          out.assign(data, data + len);
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Large", reqPayload);
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(resp.payload().size() == reqPayload.size());
+    REQUIRE(resp.payload() == reqPayload);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server propagates non-zero status from handler",
+                 "[rpc][server]")
+{
+    registerHandler("/pkg.Svc/Fail",
+      [](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          return Rpc_Status{ Rpc_StatusCode::NOT_FOUND, "" };
+      });
+
+    int32_t ch = localChannel();
+    auto resp = doCall(ch, "/pkg.Svc/Fail");
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::NOT_FOUND);
+    REQUIRE(resp.payload().empty());
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server response carries correct request ID",
+                 "[rpc][server]")
+{
+    registerHandler("/pkg.Svc/Noop",
+      [](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    uint32_t requestId = ctx->startUnary(ch, "/pkg.Svc/Noop", nullptr, 0);
+    auto resp = pollResult(requestId);
+
+    REQUIRE(resp.requestid() == requestId);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server UNIMPLEMENTED response carries correct request ID",
+                 "[rpc][server]")
+{
+    int32_t ch = localChannel();
+    uint32_t requestId = ctx->startUnary(ch, "/missing/method", nullptr, 0);
+    auto resp = pollResult(requestId);
+
+    REQUIRE(resp.statuscode() == Rpc_StatusCode::UNIMPLEMENTED);
+    REQUIRE(resp.requestid() == requestId);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server handles sequential requests on one channel",
+                 "[rpc][server]")
+{
+    std::atomic<int> callCount{ 0 };
+    registerHandler("/pkg.Svc/Count",
+      [&](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          callCount++;
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    int32_t ch = localChannel();
+    for (int i = 0; i < 5; i++) {
+        auto resp = doCall(ch, "/pkg.Svc/Count");
+        REQUIRE(resp.statuscode() == Rpc_StatusCode::OK);
+    }
+
+    REQUIRE(callCount == 5);
+    ctx->closeChannel(ch);
+}
+
+TEST_CASE_METHOD(RpcServerFixture,
+                 "RPC server invokes handlers concurrently",
+                 "[rpc][server]")
+{
+    // Thread pool is hardcoded to 4 in RpcServer::RpcServer().
+    constexpr int N = 4;
+    std::atomic<int> entered{ 0 };
+
+    registerHandler("/pkg.Svc/Block",
+      [&](const uint8_t*, size_t, std::vector<uint8_t>&) {
+          entered.fetch_add(1, std::memory_order_acq_rel);
+          const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          while (entered.load(std::memory_order_acquire) < N) {
+              if (std::chrono::steady_clock::now() >= deadline)
+                  FAIL("Timed out — server is likely serialising dispatch");
+              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+          return Rpc_Status{ Rpc_StatusCode::OK, "" };
+      });
+
+    std::vector<std::jthread> threads;
+    std::vector<int> statuses(N, -1);
+
+    for (int i = 0; i < N; i++) {
+        threads.emplace_back([&, i] {
+            auto localCtx = std::make_shared<RpcContext>();
+            getRpcContextRegistry().registerContext(localCtx->getContextId(),
+                                                    localCtx);
+
+            int32_t ch = localCtx->createChannel("faabric://localhost");
+            uint32_t rid = localCtx->startUnary(ch, "/pkg.Svc/Block", nullptr, 0);
+            
+            while (!localCtx->testResponse(rid))
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            
+            faabric::RpcResponse resp;
+            localCtx->getResponse(rid, resp);
+            statuses.at(i) = resp.statuscode();
+            localCtx->closeChannel(ch);
+
+            getRpcContextRegistry().removeContext(localCtx->getContextId());
+        });
+    }
+
+    for (auto& t : threads)
+        if (t.joinable())
+            t.join();
+
+    REQUIRE(entered.load() == N);
+    for (int i = 0; i < N; i++)
+        REQUIRE(statuses.at(i) == Rpc_StatusCode::OK);
 }
 
 } // namespace tests

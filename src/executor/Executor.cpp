@@ -398,9 +398,10 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 for (const auto& ch : rpcMigCtx.channels()) {
                     channels.emplace_back(ch.channelid(), ch.targeturi());
                 }
+                
 
-                ExecutorContext::get()->getRpcContext().deserializeChannels(
-                  channels);
+                // ExecutorContext::get()->getRpcContext().deserializeChannels(
+                //   channels);
             }
 
             returnValue =

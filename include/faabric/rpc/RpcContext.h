@@ -32,6 +32,9 @@ class RpcContext
 {
   public:
     RpcContext();
+    ~RpcContext();
+
+    int32_t getContextId() const;
 
     int32_t createChannel(const std::string& targetUri);
     ChannelInfo getChannel(int32_t channelId);
@@ -62,8 +65,12 @@ class RpcContext
     void onResponseReceived(const faabric::RpcResponse& resp);
 
   private:
+    static std::atomic<int32_t> nextContextId;
+    static std::atomic<uint32_t> nextRequestId;
+
+    int32_t contextId;
+
     std::atomic<int32_t> nextChannelId{ 1 };
-    std::atomic<uint32_t> nextRequestId{ 1 };
 
     faabric::util::ConcurrentMap<int32_t, ChannelInfo> channels;
 
@@ -86,7 +93,5 @@ class RpcContext
     std::shared_ptr<RpcClientTransport> getOrCreateTransport(
       const ChannelInfo& info);
 };
-
-RpcContext& getExecutingRpcContext();
 
 } // namespace faabric::rpc

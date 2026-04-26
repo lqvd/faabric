@@ -2,6 +2,7 @@
 
 #include <faabric/executor/ExecutorContext.h>
 #include <faabric/rpc/rpc.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
 
@@ -15,6 +16,10 @@
 namespace faabric::rpc {
 
 static constexpr std::string_view kFaabricScheme = "faabric://";
+
+std::atomic<int32_t> RpcContext::nextContextId{1};
+
+std::atomic<uint32_t> RpcContext::nextRequestId{1};
 
 static bool isFaabricUri(const std::string& uri)
 {
@@ -34,7 +39,20 @@ static std::pair<std::string, int> parseFaabricUri(const std::string& uri)
     return { host, port };
 }
 
-RpcContext::RpcContext() = default;
+
+RpcContext::RpcContext() 
+  : contextId(nextContextId.fetch_add(1, std::memory_order_relaxed)) {}
+
+RpcContext::~RpcContext()
+{
+    getRpcContextRegistry().removeContext(contextId);
+    getRpcContextRegistry().clearAllRequestsForContext(contextId);
+}
+
+int32_t RpcContext::getContextId() const
+{
+    return contextId;
+}
 
 ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
 {
@@ -115,7 +133,6 @@ void RpcContext::clear()
     targetToTransport.clear();
     requestToTransport.clear();
     nextChannelId.store(1, std::memory_order_relaxed);
-    nextRequestId.store(1, std::memory_order_relaxed);
 }
 
 std::vector<std::pair<int32_t, std::string>> RpcContext::serializeChannels() const
@@ -164,8 +181,10 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     req.set_payload(reqBuffer, reqLength);
     req.set_requestid(requestId);
 
+    getRpcContextRegistry().registerInFlightRequest(requestId, this->contextId);
+
     transport->sendRequestAsync(requestId, req);
-    requestToTransport.insertOrAssign(requestId, transport);
+    requestToTransport.insertOrAssign(requestId, std::move(transport));
 
     return requestId;
 }
@@ -187,12 +206,12 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
         return false;
     }
 
-    bool got = transport.value()->getResponse(requestId, out);
-    if (got) {
+    if (transport.value()->getResponse(requestId, out)) {
         requestToTransport.erase(requestId);
+        return true;
     }
 
-    return got;
+    return false;
 }
 
 bool RpcContext::hasPendingRequest(uint32_t requestId)
@@ -288,11 +307,6 @@ void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
     }
 
     transport.value()->onResponseReceived(resp);
-}
-
-RpcContext& getExecutingRpcContext()
-{
-    return faabric::executor::ExecutorContext::get()->getRpcContext();
 }
 
 } // namespace faabric::rpc

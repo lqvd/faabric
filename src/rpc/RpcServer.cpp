@@ -2,6 +2,7 @@
 
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
 #include <faabric/util/network.h>
@@ -19,16 +20,22 @@ RpcServer::RpcServer()
     ) {}
 
 void RpcServer::registerHandler(const std::string& method,
-                                RpcHandler handler) {
+                                RpcHandler handler)
+{
   routingTable[method] = handler;
+}
+
+std::unique_ptr<google::protobuf::Message> RpcServer::doSyncRecv(
+    transport::Message& message)
+{
+    throw std::runtime_error("Rpc server does not support sync recv");
 }
 
 void RpcServer::doAsyncRecv(transport::Message& message)
 {
     uint8_t header = message.getMessageCode();
-    int sequenceNum = message.getSequenceNum();
     switch (header) {
-        case faabric::rpc::INVOKE: {
+        case faabric::rpc::RpcMessageType::INVOKE: {
             faabric::RpcRequest req;
 
             if (!req.ParseFromArray(message.data().data(),
@@ -45,7 +52,7 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 resp.set_requestid(req.requestid());
                 resp.set_statuscode(Rpc_StatusCode::UNIMPLEMENTED);
 
-                sendResponse(message, resp);
+                sendResponse(req, resp);
                 return;
             }
 
@@ -65,10 +72,10 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 resp.set_payload(output.data(), output.size());
             }
 
-            sendResponse(message, resp);
+            sendResponse(req, resp);
             break;
         }
-        case faabric::rpc::RESPONSE: {
+        case faabric::rpc::RpcMessageType::RESPONSE: {
             faabric::RpcResponse resp;
             if (!resp.ParseFromArray(message.data().data(),
                                      message.data().size())) {
@@ -76,13 +83,24 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
-            auto& rpcContext = getExecutingRpcContext();
-            rpcContext.onResponseReceived(resp);
+            auto& registry = getRpcContextRegistry();
+            auto ctx = registry.getContextForRequest(resp.requestid());
+
+            if (ctx) {
+                SPDLOG_TRACE("RPC - Routing response {} to context {}", 
+                             resp.requestid(), ctx->getContextId());
+
+                ctx->onResponseReceived(resp);
+                registry.clearRequest(resp.requestid());
+            } else {
+                SPDLOG_WARN("RPC - Orphaned response received for request ID {}", 
+                            resp.requestid());
+            }
             break;
         }
         default: {
-            SPDLOG_ERROR("Invalid RPC header: {}", header);
-            throw std::runtime_error("Invalid RPC message");
+            throw std::runtime_error(
+              fmt::format("Unrecognized async call header: {}", header));
         }
     }
 }
@@ -95,6 +113,7 @@ void RpcServer::sendResponse(const faabric::RpcRequest& req,
         throw std::runtime_error("Failed to serialise RpcResponse");
     }
 
+    // TODO: What if the reply host migrates before this?
     faabric::transport::MessageEndpointClient client(
         req.replyhost(),
         req.replyport(),
@@ -103,10 +122,9 @@ void RpcServer::sendResponse(const faabric::RpcRequest& req,
     );
 
     client.asyncSend(
-        faabric::rpc::RESPONSE,
+        faabric::rpc::RpcMessageType::RESPONSE,
         reinterpret_cast<const uint8_t*>(buffer.data()),
-        buffer.size(),
-        req.getSequenceNum() // reuse or ignore
+        buffer.size()
     );
 }
 

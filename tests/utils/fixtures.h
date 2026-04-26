@@ -18,6 +18,11 @@
 #include <faabric/planner/planner.pb.h>
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/redis/Redis.h>
+#include <faabric/rpc/rpc.h>
+#include <faabric/rpc/RpcClientTransport.h>
+#include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/scheduler/FunctionCallServer.h>
 #include <faabric/scheduler/Scheduler.h>
@@ -556,24 +561,26 @@ class RpcTestFixture : public ConfFixture
     {
         conf.endpointHost = "127.0.0.1";
         conf.overrideCpuCount = 1;
+        ctx = std::make_shared<faabric::rpc::RpcContext>();
+        faabric::rpc::getRpcContextRegistry().registerContext(
+          ctx->getContextId(), ctx);
     }
 
-    ~RpcTestFixture() { ctx.clear(); }
+    ~RpcTestFixture()
+    {
+        ctx->clear();
+        faabric::rpc::getRpcContextRegistry().removeContext(
+          ctx->getContextId());
+    }
 
   protected:
-    struct RpcCallResult
-    {
-        int status = -1;
-        std::string response;
-        std::string error;
-    };
+    std::shared_ptr<faabric::rpc::RpcContext> ctx;
 
-    faabric::rpc::RpcContext ctx;
 
     int nextPort()
     {
-        static std::atomic<int> p = 19000;
-        return p.fetch_add(1);
+        static std::atomic<int> p{ 19000 };
+        return p.fetch_add(1, std::memory_order_relaxed);
     }
 
     std::string makeFaabricUri(int port) const
@@ -581,53 +588,120 @@ class RpcTestFixture : public ConfFixture
         return "faabric://127.0.0.1:" + std::to_string(port);
     }
 
-    std::jthread startClientCall(const std::string& targetUri,
-                                 const std::string& method,
-                                 const std::string& payload,
-                                 RpcCallResult& out)
+    faabric::RpcResponse pollResult(uint32_t requestId)
+    {
+        while (!ctx->testResponse(requestId))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        faabric::RpcResponse resp;
+        if (!ctx->getResponse(requestId, resp))
+            resp.set_statuscode(Rpc_StatusCode::INTERNAL);
+        return resp;
+    }
+
+    // Returns false on timeout; fills resp on success.
+    bool pollResultTimed(uint32_t requestId,
+                         faabric::RpcResponse& resp,
+                         int timeoutMs = 3000)
+    {
+        const auto deadline =
+          std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(timeoutMs);
+
+        while (!ctx->testResponse(requestId)) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        if (!ctx->getResponse(requestId, resp))
+            resp.set_statuscode(Rpc_StatusCode::INTERNAL);
+        return true;
+    }
+
+    // Fire-and-poll: creates a channel, sends, blocks until response.
+    faabric::RpcResponse doCall(int32_t channelId,
+                                const std::string& method,
+                                const std::string& payload = {})
+    {
+        uint32_t requestId = ctx->startUnary(
+          channelId,
+          method,
+          reinterpret_cast<const uint8_t*>(payload.data()),
+          static_cast<int32_t>(payload.size()));
+        return pollResult(requestId);
+    }
+
+    // Async variant used by wire-level tests: client runs in a jthread so the
+    // test body can act as the "server" (recv + reply) concurrently.
+    std::jthread startClientCall(const std::string&    targetUri,
+                                 const std::string&    method,
+                                 const std::string&    payload,
+                                 faabric::RpcResponse& result)
     {
         return std::jthread([&, targetUri, method, payload] {
             try {
-                int32_t channelId = ctx.createChannel(targetUri);
-                auto channel = ctx.getChannel(channelId);
-
-                std::vector<uint8_t> outBuffer;
-                out.status = channel->syncCall(
+                int32_t channelId = ctx->createChannel(targetUri);
+                uint32_t requestId = ctx->startUnary(
+                  channelId,
                   method,
                   reinterpret_cast<const uint8_t*>(payload.data()),
-                  payload.size(),
-                  outBuffer);
+                  static_cast<int32_t>(payload.size()));
 
-                out.response.assign(outBuffer.begin(), outBuffer.end());
-                ctx.closeChannel(channelId);
+                while (!ctx->testResponse(requestId))
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+                if (!ctx->getResponse(requestId, result))
+                    result.set_statuscode(Rpc_StatusCode::INTERNAL);
+
+                ctx->closeChannel(channelId);
             } catch (const std::exception& ex) {
-                out.error = ex.what();
+                result.set_statuscode(Rpc_StatusCode::INTERNAL);
+                result.set_errormessage(ex.what());
             }
         });
     }
 
     void sendProtoResponse(faabric::transport::SyncRecvMessageEndpoint& server,
-                           int statusCode,
+                           int32_t statusCode,
                            const std::string& payload)
     {
         faabric::RpcResponse resp;
         resp.set_statuscode(statusCode);
-        resp.set_payload(payload);
+        if (!payload.empty())
+            resp.set_payload(payload);
 
-        std::string serialised;
-        REQUIRE(resp.SerializeToString(&serialised));
-
-        server.sendResponse(NO_HEADER,
-                            reinterpret_cast<const uint8_t*>(serialised.data()),
-                            serialised.size());
+        std::string buf;
+        resp.SerializeToString(&buf);
+        server.sendResponse(0, reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
     }
 
     void sendRawResponse(faabric::transport::SyncRecvMessageEndpoint& server,
                          const std::string& raw)
     {
-        server.sendResponse(NO_HEADER,
-                            reinterpret_cast<const uint8_t*>(raw.data()),
-                            raw.size());
+        server.sendResponse(0, reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
+    }
+};
+
+class RpcServerFixture : public RpcTestFixture
+{
+  public:
+    RpcServerFixture() { server.start(); }
+
+    ~RpcServerFixture() { server.stop(); }
+
+  protected:
+    faabric::rpc::RpcServer server;
+
+    void registerHandler(const std::string& method,
+                         faabric::rpc::RpcHandler handler)
+    {
+        server.registerHandler(method, std::move(handler));
+    }
+
+    int32_t localChannel()
+    {
+        return ctx->createChannel("faabric://localhost");
     }
 };
 

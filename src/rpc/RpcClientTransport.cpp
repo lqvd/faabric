@@ -1,4 +1,7 @@
 #include <faabric/rpc/RpcClientTransport.h>
+
+#include <faabric/rpc/rpc.h>
+#include <faabric/transport/common.h>
 #include <faabric/util/config.h>
 #include <faabric/util/logging.h>
 
@@ -37,7 +40,7 @@ void RpcClientTransport::sendRequestAsync(uint32_t requestId,
     }
 
     try {
-        client.asyncSend(faabric::rpc::INVOKE,
+        client.asyncSend(faabric::rpc::RpcMessageType::INVOKE,
                          reinterpret_cast<const uint8_t*>(buffer.data()),
                          buffer.size(),
                          requestId);

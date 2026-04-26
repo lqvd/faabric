@@ -55,12 +55,9 @@ class ExecutorContext
 
     int getMsgIdx() { return msgIdx; }
 
-    faabric::rpc::RpcContext& getRpcContext() { return rpcContext; }
-
   private:
     Executor* executor = nullptr;
     std::shared_ptr<faabric::BatchExecuteRequest> req = nullptr;
     int msgIdx = 0;
-    faabric::rpc::RpcContext rpcContext;
 };
 }

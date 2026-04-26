@@ -25,12 +25,12 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
 
   protected:
     std::unique_ptr<google::protobuf::Message> doSyncRecv(
-        transport::Message& message) = 0;
+        transport::Message& message) override;
 
     void doAsyncRecv(transport::Message& message) override;
 
   private:
-    void sendResponse(const transport::Message& requestMsg,
+    void sendResponse(const faabric::RpcRequest& req,
                       const faabric::RpcResponse& resp);
 
     std::unordered_map<std::string, RpcHandler> routingTable;
