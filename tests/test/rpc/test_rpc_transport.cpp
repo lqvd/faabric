@@ -31,12 +31,9 @@ TEST_CASE_METHOD(RpcTestFixture,
                  "[rpc][transport]")
 {
     const std::string uri = "https://example.com:443";
-    try {
-        ctx->createChannel(uri);
-        FAIL("Expected createChannel to throw");
-    } catch (const std::runtime_error& ex) {
-        REQUIRE(std::string(ex.what()).find(uri) != std::string::npos);
-    }
+    
+    REQUIRE_THROWS_WITH(ctx->createChannel(uri),
+                        Catch::Matchers::Contains(uri));
 }
 
 // TEST_CASE_METHOD(RpcTestFixture,

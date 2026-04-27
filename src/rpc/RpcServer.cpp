@@ -84,17 +84,39 @@ void RpcServer::doAsyncRecv(transport::Message& message)
             }
 
             auto& registry = getRpcContextRegistry();
-            auto ctx = registry.getContextForRequest(resp.requestid());
 
+            auto ctxId = registry.getContextIdForRequest(resp.requestid());
+            if (!ctxId) {
+                SPDLOG_WARN("RPC - Orphaned response {}", resp.requestid());
+                return;
+            }
+
+            auto ctx = registry.getContextForRequest(resp.requestid());
             if (ctx) {
                 SPDLOG_TRACE("RPC - Routing response {} to context {}", 
                              resp.requestid(), ctx->getContextId());
-
                 ctx->onResponseReceived(resp);
-                registry.clearRequest(resp.requestid());
-            } else {
-                SPDLOG_WARN("RPC - Orphaned response received for request ID {}", 
-                            resp.requestid());
+            } else if (auto forwardHost = 
+                    registry.getForwardingAddress(ctxId.value())) {
+                SPDLOG_TRACE("RPC - Proxying response {} to migrated host {}",
+                             resp.requestid(),
+                             forwardHost.value());
+        
+                // Re-serialize the response
+                std::string buffer;
+                resp.SerializeToString(&buffer);
+
+                // Forward to the new host's async port
+                faabric::transport::MessageEndpointClient client(
+                    forwardHost.value(), 
+                    RPC_ASYNC_PORT, 
+                    RPC_SYNC_PORT, 
+                    5000
+                );
+                
+                client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE, 
+                                reinterpret_cast<const uint8_t*>(buffer.data()), 
+                                buffer.size());
             }
             break;
         }

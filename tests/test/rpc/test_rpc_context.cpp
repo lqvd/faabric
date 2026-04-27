@@ -24,11 +24,13 @@ TEST_CASE_METHOD(RpcTestFixture,
     int32_t idA = ctx->createChannel(uriA);
     int32_t idB = ctx->createChannel(uriB);
 
-    auto serialized = ctx->serializeChannels();
-    REQUIRE(serialized.size() == 2);
+    faabric::RpcMigrationState migSt = ctx->serializeMigrationState();
+    
+    REQUIRE(migSt.channels_size() == 2);
 
     ctx->clear();
-    ctx->deserializeChannels(serialized);
+
+    ctx->deserializeMigrationState(migSt);
 
     auto chA = ctx->getChannel(idA);
     auto chB = ctx->getChannel(idB);
@@ -84,10 +86,10 @@ TEST_CASE_METHOD(RpcTestFixture,
     int32_t idB = ctx->createChannel(makeFaabricUri(nextPort()));
 
     ctx->closeChannel(idA);
-
-    auto serialized = ctx->serializeChannels();
-    REQUIRE(serialized.size() == 1);
-    REQUIRE(serialized.at(0).first == idB);
+    auto migSt = ctx->serializeMigrationState();
+    
+    REQUIRE(migSt.channels_size() == 1);
+    REQUIRE(migSt.channels(0).channelid() == idB);
 }
 
 TEST_CASE_METHOD(RpcTestFixture,
@@ -143,7 +145,5 @@ TEST_CASE_METHOD(RpcTestFixture,
     REQUIRE(ctx->tryEnterCall());
     ctx->exitCall();
 }
-
-
 
 } // namespace tests

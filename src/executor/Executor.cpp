@@ -387,11 +387,11 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
 
             if (isMigration && msg.isrpc() &&
                 !task.req->contextdata().empty()) {
-                faabric::RpcMigrationContext rpcMigCtx;
+                faabric::RpcMigrationState rpcMigCtx;
                 if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
                                               task.req->contextdata().size())) {
                     throw std::runtime_error(
-                      "Failed to parse RpcMigrationContext");
+                      "Failed to parse RpcMigrationState");
                 }
 
                 std::vector<std::pair<int32_t, std::string>> channels;
