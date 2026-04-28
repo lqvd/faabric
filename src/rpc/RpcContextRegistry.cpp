@@ -12,68 +12,76 @@ RpcContextRegistry& getRpcContextRegistry()
     return reg;
 }
 
-void RpcContextRegistry::registerContext(int32_t contextId,
+void RpcContextRegistry::registerContext(int32_t msgIdx,
                                          std::shared_ptr<RpcContext> ctx)
 {
-    contexts.insertOrAssign(contextId, std::move(ctx));
-    SPDLOG_TRACE("RPC - Registered Context ID {}", contextId);
+    msgIdxToContext.insertOrAssign(msgIdx, std::move(ctx));
+    SPDLOG_TRACE("RPC - Registered Context ID {}", msgIdx);
+}
+
+std::shared_ptr<RpcContext> RpcContextRegistry::getContext(int32_t msgId)
+{
+    return msgIdxToContext.get(msgId).value_or(nullptr);
+}
+
+void RpcContextRegistry::removeContext(int32_t msgIdx)
+{
+    msgIdxToContext.erase(msgIdx);
+    SPDLOG_TRACE("RPC - Removed context for msg {}", msgIdx);
 }
 
 void RpcContextRegistry::registerInFlightRequest(uint32_t requestId,
-                                                 int32_t contextId)
+                                                 int32_t msgIdx)
 {
-    requestToContextId.insertOrAssign(requestId, std::move(contextId));
+    requestToMsgIdx.insertOrAssign(requestId, std::move(msgIdx));
 }
 
 std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
-    uint32_t requestId)
+  uint32_t requestId)
 {
-    auto ctxIdOpt = requestToContextId.get(requestId);
-    if (!ctxIdOpt.has_value()) {
+    auto msgIdOpt = requestToMsgIdx.get(requestId);
+    if (!msgIdOpt.has_value()) {
         return nullptr;
     }
-
-    auto ctxOpt = contexts.get(ctxIdOpt.value());
-    return ctxOpt.value_or(nullptr);
+    return msgIdxToContext.get(msgIdOpt.value()).value_or(nullptr);
 }
 
-std::optional<int32_t> RpcContextRegistry::getContextIdForRequest(
-    uint32_t requestId)
+std::optional<int32_t> RpcContextRegistry::getMsgIdxForRequest(uint32_t requestId)
 {
-    return requestToContextId.get(requestId);
+    return requestToMsgIdx.get(requestId);
 }
 
 void RpcContextRegistry::clearRequest(uint32_t requestId)
 {
-    requestToContextId.erase(requestId);
+    requestToMsgIdx.erase(requestId);
 }
 
-void RpcContextRegistry::removeContext(int32_t contextId) {
-    contexts.erase(contextId);
-    SPDLOG_TRACE("RPC - Removed Context ID {}", contextId);
-}
-
-void RpcContextRegistry::clearAllRequestsForContext(int32_t targetContextId)
+void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
 {
-    requestToContextId.inspectAll(
-          [this, targetContextId](const uint32_t& reqId, const uint32_t& ctxId) {
-        if (ctxId == targetContextId) {
-            this->requestToContextId.erase(reqId);
-        }
-    });
+    std::vector<uint32_t> toErase;
+    requestToMsgIdx.inspectAll(
+      [&toErase, msgIdx](const uint32_t& reqId, const int32_t& mappedMsgIdx) {
+          if (mappedMsgIdx == msgIdx) {
+              toErase.push_back(reqId);
+          }
+      });
+
+    for (uint32_t reqId : toErase) {
+        requestToMsgIdx.erase(reqId);
+    }
 }
 
-void RpcContextRegistry::setForwardingAddress(int32_t contextId,
+void RpcContextRegistry::setForwardingAddress(int32_t msgIdx,
                                               std::string newHost) 
 {
-    forwardingTable.insertOrAssign(contextId, std::move(newHost));
-    contexts.erase(contextId); 
+    forwardingTable.insertOrAssign(msgIdx, std::move(newHost));
+    msgIdxToContext.erase(msgIdx); 
 }
 
 std::optional<std::string> RpcContextRegistry::getForwardingAddress(
-    int32_t contextId)
+    int32_t msgIdx)
 {
-    return forwardingTable.get(contextId);
+    return forwardingTable.get(msgIdx);
 }
 
 } // namespace faabric::rpc

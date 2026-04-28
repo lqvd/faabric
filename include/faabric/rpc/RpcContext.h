@@ -31,10 +31,8 @@ enum RpcContextMode
 class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
-    RpcContext();
+    RpcContext(int32_t ownerMsgIdIn);
     ~RpcContext();
-
-    int32_t getContextId() const;
 
     // ------
     // Channel handling
@@ -82,8 +80,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     void beginQuiesce();
 
-    void awaitQuiesced(uint32_t timeoutMs);
-  
     void endQuiesce();
 
     bool tryEnterCall();
@@ -91,10 +87,9 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     void exitCall();
 
   private:
-    static std::atomic<int32_t> nextContextId;
-    static std::atomic<uint32_t> nextRequestId;
+    const int32_t ownerMsgId;
 
-    int32_t contextId;
+    static std::atomic<uint32_t> nextRequestId;
 
     std::atomic<int32_t> nextChannelId{ 1 };
 
@@ -107,12 +102,13 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     mutable std::mutex quiesceMx;
     std::condition_variable quiesceCv;
 
-    template <typename TFrom>
+    template <typename Key>
     using ConcurrentMapToTransport =
-        faabric::util::ConcurrentMap<TFrom,
-                                     std::shared_ptr<RpcClientTransport>>;
+        faabric::util::ConcurrentMap<Key, std::shared_ptr<RpcClientTransport>>;
     ConcurrentMapToTransport<std::string> targetToTransport;
     ConcurrentMapToTransport<uint32_t> requestToTransport;
+
+    int32_t getOwnerMsgId() const { return ownerMsgId; }
 
     static ChannelInfo parseChannelInfo(const std::string& targetUri);
     static std::string makeTargetKey(const ChannelInfo& info);

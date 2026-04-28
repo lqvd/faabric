@@ -11,31 +11,36 @@ namespace faabric::rpc {
 class RpcContextRegistry
 {
   public:
-    void registerContext(int32_t contextId, std::shared_ptr<RpcContext> ctx);
+    void registerContext(int32_t msgIdx, std::shared_ptr<RpcContext> ctx);
 
-    void registerInFlightRequest(uint32_t requestId, int32_t contextId);
+    void registerInFlightRequest(uint32_t requestId, int32_t msgIdx);
+
+    std::shared_ptr<RpcContext> getContext(int32_t msgIdx);
+
+    void removeContext(int32_t msgIdx);
 
     std::shared_ptr<RpcContext> getContextForRequest(uint32_t requestId);
 
-    std::optional<int32_t> getContextIdForRequest(uint32_t requestId);
+    std::optional<int32_t> getMsgIdxForRequest(uint32_t requestId);
 
     void clearRequest(uint32_t requestId);
 
-    void removeContext(int32_t contextId);
+    void clearAllRequestsForContext(int32_t msgIdx);
 
-    void clearAllRequestsForContext(int32_t targetContextId);
+    void setForwardingAddress(int32_t msgIdx, std::string newHost);
 
-    void setForwardingAddress(int32_t contextId, std::string newHost);
-
-    std::optional<std::string> getForwardingAddress(int32_t contextId);
+    std::optional<std::string> getForwardingAddress(int32_t msgIdx);
 
   private:
-    faabric::util::ConcurrentMap<int32_t, std::shared_ptr<RpcContext>> contexts;
-    faabric::util::ConcurrentMap<uint32_t, int32_t> requestToContextId;
+    template <typename Key, typename Value>
+    using ConcurrentMap = faabric::util::ConcurrentMap<Key, Value>;
+
+    ConcurrentMap<int32_t, std::shared_ptr<RpcContext>> msgIdxToContext;
+    ConcurrentMap<uint32_t, int32_t> requestToMsgIdx;
 
     // If Wasm module migrates to Host B, we proxy the async reply to B via the
     // forwarding table.
-    faabric::util::ConcurrentMap<int32_t, std::string> forwardingTable;
+    ConcurrentMap<int32_t, std::string> forwardingTable;
 };
 
 RpcContextRegistry& getRpcContextRegistry();

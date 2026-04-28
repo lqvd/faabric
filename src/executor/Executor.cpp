@@ -5,6 +5,8 @@
 #include <faabric/mpi/MpiWorldRegistry.h>
 #include <faabric/planner/PlannerClient.h>
 #include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/snapshot/SnapshotClient.h>
 #include <faabric/snapshot/SnapshotRegistry.h>
 #include <faabric/state/State.h>
@@ -385,8 +387,10 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                   msg);
             }
 
-            if (isMigration && msg.isrpc() &&
-                !task.req->contextdata().empty()) {
+            if (isMigration && msg.isrpc() && !task.req->contextdata().empty()) {
+                auto& registry = faabric::rpc::getRpcContextRegistry();
+                auto rpcCtx = registry.getContext(msg.id());
+
                 faabric::RpcMigrationState rpcMigCtx;
                 if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
                                               task.req->contextdata().size())) {
@@ -394,16 +398,9 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                       "Failed to parse RpcMigrationState");
                 }
 
-                std::vector<std::pair<int32_t, std::string>> channels;
-                for (const auto& ch : rpcMigCtx.channels()) {
-                    channels.emplace_back(ch.channelid(), ch.targeturi());
-                }
-                
-
-                // ExecutorContext::get()->getRpcContext().deserializeChannels(
-                //   channels);
+                rpcCtx->deserializeMigrationState(rpcMigCtx);
             }
-
+            
             returnValue =
               executeTask(threadPoolIdx, task.messageIndex, task.req);
         } catch (const faabric::util::FunctionMigratedException& ex) {
@@ -432,6 +429,9 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                         mpiWorldRegistry.clearWorld(msg.mpiworldid());
                     }
                 }
+            } else if (msg.isrpc()) {
+                auto& registry = faabric::rpc::getRpcContextRegistry();
+                registry.removeContext(msg.id());
             }
         } catch (const faabric::util::FunctionFrozenException& ex) {
             SPDLOG_DEBUG(
@@ -473,6 +473,9 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 if (mpiWorldRegistry.worldExists(msg.mpiworldid())) {
                     mpiWorldRegistry.getWorld(msg.mpiworldid()).destroy();
                 }
+            } else if (msg.isrpc()) {
+                auto& registry = faabric::rpc::getRpcContextRegistry();
+                registry.removeContext(msg.id());
             }
         }
 

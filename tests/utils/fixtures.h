@@ -561,21 +561,33 @@ class RpcTestFixture : public ConfFixture
     {
         conf.endpointHost = "127.0.0.1";
         conf.overrideCpuCount = 1;
-        ctx = std::make_shared<faabric::rpc::RpcContext>();
-        faabric::rpc::getRpcContextRegistry().registerContext(
-          ctx->getContextId(), ctx);
+
+        // Allocate a synthetic msgId for this test's RpcContext.
+        // Using a high range to avoid colliding with anything a real
+        // executor might assign.
+        msgId = nextTestMsgId();
+
+        ctx = std::make_shared<faabric::rpc::RpcContext>(msgId);
+        faabric::rpc::getRpcContextRegistry().registerContext(msgId, ctx);
     }
 
     ~RpcTestFixture()
     {
         ctx->clear();
-        faabric::rpc::getRpcContextRegistry().removeContext(
-          ctx->getContextId());
+        faabric::rpc::getRpcContextRegistry().removeContext(msgId);
     }
 
   protected:
     std::shared_ptr<faabric::rpc::RpcContext> ctx;
+    int32_t msgId{ 0 };
 
+    static int32_t nextTestMsgId()
+    {
+        // Start high to avoid colliding with any real executor msg IDs
+        // that other parts of the test process might be using.
+        static std::atomic<int32_t> id{ 1000000 };
+        return id.fetch_add(1, std::memory_order_relaxed);
+    }
 
     int nextPort()
     {
@@ -599,7 +611,6 @@ class RpcTestFixture : public ConfFixture
         return resp;
     }
 
-    // Returns false on timeout; fills resp on success.
     bool pollResultTimed(uint32_t requestId,
                          faabric::RpcResponse& resp,
                          int timeoutMs = 3000)
@@ -619,7 +630,6 @@ class RpcTestFixture : public ConfFixture
         return true;
     }
 
-    // Fire-and-poll: creates a channel, sends, blocks until response.
     faabric::RpcResponse doCall(int32_t channelId,
                                 const std::string& method,
                                 const std::string& payload = {})
@@ -632,11 +642,9 @@ class RpcTestFixture : public ConfFixture
         return pollResult(requestId);
     }
 
-    // Async variant used by wire-level tests: client runs in a jthread so the
-    // test body can act as the "server" (recv + reply) concurrently.
-    std::jthread startClientCall(const std::string&    targetUri,
-                                 const std::string&    method,
-                                 const std::string&    payload,
+    std::jthread startClientCall(const std::string& targetUri,
+                                 const std::string& method,
+                                 const std::string& payload,
                                  faabric::RpcResponse& result)
     {
         return std::jthread([&, targetUri, method, payload] {
@@ -662,32 +670,35 @@ class RpcTestFixture : public ConfFixture
         });
     }
 
-    void sendProtoResponse(faabric::transport::SyncRecvMessageEndpoint& server,
-                           int32_t statusCode,
-                           const std::string& payload)
-    {
-        faabric::RpcResponse resp;
-        resp.set_statuscode(statusCode);
-        if (!payload.empty())
-            resp.set_payload(payload);
+    // void sendProtoResponse(faabric::transport::SyncRecvMessageEndpoint& server,
+    //                        int32_t statusCode,
+    //                        const std::string& payload)
+    // {
+    //     faabric::RpcResponse resp;
+    //     resp.set_statuscode(statusCode);
+    //     if (!payload.empty())
+    //         resp.set_payload(payload);
 
-        std::string buf;
-        resp.SerializeToString(&buf);
-        server.sendResponse(0, reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
-    }
+    //     std::string buf;
+    //     resp.SerializeToString(&buf);
+    //     server.sendResponse(0,
+    //                         reinterpret_cast<const uint8_t*>(buf.data()),
+    //                         buf.size());
+    // }
 
-    void sendRawResponse(faabric::transport::SyncRecvMessageEndpoint& server,
-                         const std::string& raw)
-    {
-        server.sendResponse(0, reinterpret_cast<const uint8_t*>(raw.data()), raw.size());
-    }
+    // void sendRawResponse(faabric::transport::SyncRecvMessageEndpoint& server,
+    //                      const std::string& raw)
+    // {
+    //     server.sendResponse(0,
+    //                         reinterpret_cast<const uint8_t*>(raw.data()),
+    //                         raw.size());
+    // }
 };
 
 class RpcServerFixture : public RpcTestFixture
 {
   public:
     RpcServerFixture() { server.start(); }
-
     ~RpcServerFixture() { server.stop(); }
 
   protected:

@@ -9,8 +9,6 @@ extern "C"
 {
 #endif
 
-typedef uint32_t Rpc_ChannelId;
-
 enum Rpc_StatusCode : int
 {
     OK                  = 0,
@@ -38,16 +36,24 @@ struct Rpc_Status {
     bool ok() const { return code == 0; }
 };
 
-int Rpc_ChannelCreate(const char* targetUri, Rpc_ChannelId* outChannelId);
+int Rpc_ChannelCreate(const char* targetUri, int32_t* outChannelId);
 
-int Rpc_ChannelClose(Rpc_ChannelId channelId);
+int Rpc_ChannelClose(int32_t channelId);
 
-int Rpc_UnaryCall(Rpc_ChannelId channelId,
-                  const char* method,
-                  const uint8_t* reqBuf,
-                  int32_t reqLen,
-                  uint8_t** outRespBuf,
-                  int32_t* outRespLen);
+int32_t __faasm_rpc_unary_start(int32_t channelId, 
+                                const char* method, 
+                                const uint8_t* reqBuf, 
+                                int32_t reqLen, 
+                                int32_t* outRequestId);
+
+void __faasm_rpc_wait_migratable(int32_t requestId, 
+                                 int32_t wasmFuncPtr, 
+                                 int32_t* state, 
+                                 int32_t resumeStep);
+
+int32_t __faasm_rpc_get_response(int32_t requestId,
+                                 int32_t* outRespOffset, 
+                                 int32_t* outRespLen);
 
 #ifdef __cplusplus
 }

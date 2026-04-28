@@ -17,8 +17,6 @@ namespace faabric::rpc {
 
 static constexpr std::string_view kFaabricScheme = "faabric://";
 
-std::atomic<int32_t> RpcContext::nextContextId{1};
-
 std::atomic<uint32_t> RpcContext::nextRequestId{1};
 
 static bool isFaabricUri(const std::string& uri)
@@ -39,35 +37,28 @@ static std::pair<std::string, int> parseFaabricUri(const std::string& uri)
     return { host, port };
 }
 
-
-RpcContext::RpcContext() 
-  : contextId(nextContextId.fetch_add(1, std::memory_order_relaxed)) {}
+RpcContext::RpcContext(int32_t ownerMsgIdIn)
+  : ownerMsgId(ownerMsgIdIn) {}
 
 RpcContext::~RpcContext()
 {
-    getRpcContextRegistry().removeContext(contextId);
-    getRpcContextRegistry().clearAllRequestsForContext(contextId);
-}
-
-int32_t RpcContext::getContextId() const
-{
-    return contextId;
+    getRpcContextRegistry().clearAllRequestsForContext(ownerMsgId);
 }
 
 ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
 {
-    if (isFaabricUri(targetUri)) {
-        auto [host, port] = parseFaabricUri(targetUri);
-        return ChannelInfo{
-            .targetUri = targetUri,
-            .isFaabric = true,
-            .host = host,
-            .port = port,
-        };
+    if (!isFaabricUri(targetUri)) {
+        throw std::runtime_error(
+            fmt::format("External RPC URIs are not implemented: {}", targetUri));
     }
 
-    throw std::runtime_error(
-      "External RPC URIs are not implemented in this prototype");
+    auto [host, port] = parseFaabricUri(targetUri);
+    return ChannelInfo{
+        .targetUri = targetUri,
+        .isFaabric = true,
+        .host = host,
+        .port = port,
+    };
 }
 
 std::string RpcContext::makeTargetKey(const ChannelInfo& info)
@@ -92,7 +83,8 @@ std::shared_ptr<RpcClientTransport> RpcContext::getOrCreateTransport(
 
     // Keep whichever instance wins the race.
     auto [inserted, stored] =
-      targetToTransport.tryEmplaceShared(key, info.host, RPC_ASYNC_PORT, info.port, 5000);
+        targetToTransport.tryEmplaceShared(key, info.host, RPC_ASYNC_PORT,
+                                           info.port, 5000);
 
     if (inserted) {
         return stored;
@@ -135,29 +127,57 @@ void RpcContext::clear()
     nextChannelId.store(1, std::memory_order_relaxed);
 }
 
-std::vector<std::pair<int32_t, std::string>> RpcContext::serializeChannels() const
+faabric::RpcMigrationState RpcContext::serializeMigrationState() const
 {
-    std::vector<std::pair<int32_t, std::string>> result;
+    faabric::RpcMigrationState migrationCtx;
 
-    channels.inspectAll([&result](const int32_t& id, const ChannelInfo& info) {
-        result.emplace_back(id, info.targetUri);
+    // Serialize Channels
+    channels.inspectAll([&migrationCtx](const int32_t& id,
+                                        const ChannelInfo& info) {
+        auto* channelState = migrationCtx.add_channels();
+        channelState->set_channelid(id);
+        channelState->set_targeturi(info.targetUri);
     });
 
-    return result;
+    // Serialize In-Flight Requests
+    requestToChannel.inspectAll([&migrationCtx](const uint32_t& reqId, 
+                                                const int32_t& chId) {
+        auto* pendingReq = migrationCtx.add_pendingrequests();
+        pendingReq->set_requestid(reqId);
+        pendingReq->set_channelid(chId);
+    });
+
+    return migrationCtx;
 }
 
-void RpcContext::deserializeChannels(
-  const std::vector<std::pair<int32_t, std::string>>& data)
+void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& migrationCtx)
 {
     clear();
 
-    for (const auto& [id, uri] : data) {
-        ChannelInfo info = parseChannelInfo(uri);
-        channels.insertOrAssign(id, std::move(info));
-        nextChannelId.store(
-          std::max(nextChannelId.load(std::memory_order_relaxed), id + 1),
-          std::memory_order_relaxed);
+    int32_t highestChannelId = 0;
+    for (const auto& channelState : migrationCtx.channels()) {
+        ChannelInfo info = parseChannelInfo(channelState.targeturi());
+        channels.insertOrAssign(channelState.channelid(), std::move(info));
+        highestChannelId = std::max(highestChannelId, channelState.channelid());
     }
+    nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
+
+    for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+        uint32_t reqId = pendingReq.requestid();
+        int32_t chId = pendingReq.channelid();
+        
+        requestToChannel.insertOrAssign(std::move(reqId), std::move(chId));
+
+        // Recreate the transport socket lazily
+        ChannelInfo info = getChannel(chId);
+        auto transport = getOrCreateTransport(info);
+        requestToTransport.insertOrAssign(std::move(reqId), std::move(transport));
+
+        getRpcContextRegistry().registerInFlightRequest(reqId, ownerMsgId);
+    }
+
+    // Register the context itself
+    getRpcContextRegistry().registerContext(ownerMsgId, shared_from_this());
 }
 
 uint32_t RpcContext::startUnary(int32_t channelId,
@@ -181,11 +201,20 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     req.set_payload(reqBuffer, reqLength);
     req.set_requestid(requestId);
 
-    getRpcContextRegistry().registerInFlightRequest(requestId, this->contextId);
+    getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
 
-    transport->sendRequestAsync(requestId, req);
+    // Remember the channel so we can rebuild on migration.
+    requestToChannel.insertOrAssign(requestId, std::move(channelId));
+
+    try {
+        transport->sendRequestAsync(requestId, req);
+    } catch (...) {
+        getRpcContextRegistry().clearRequest(requestId);
+        requestToChannel.erase(requestId);
+        throw;
+    }
+
     requestToTransport.insertOrAssign(requestId, std::move(transport));
-
     return requestId;
 }
 
@@ -208,6 +237,9 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
 
     if (transport.value()->getResponse(requestId, out)) {
         requestToTransport.erase(requestId);
+        requestToChannel.erase(requestId);
+
+        getRpcContextRegistry().clearRequest(requestId);
         return true;
     }
 
@@ -231,36 +263,14 @@ void RpcContext::eraseRequest(uint32_t requestId)
         transport.value()->eraseRequest(requestId);
         requestToTransport.erase(requestId);
     }
+
+    requestToChannel.erase(requestId);
+    getRpcContextRegistry().clearRequest(requestId);
 }
 
 void RpcContext::beginQuiesce()
 {
     context.store(QUIESCE, std::memory_order_release);
-}
-
-void RpcContext::awaitQuiesced(uint32_t timeoutMs)
-{
-#ifndef NDEBUG
-    assert(context.load(std::memory_order_acquire) == QUIESCE);
-#endif
-
-    const auto start = std::chrono::steady_clock::now();
-
-    while (inFlightCalls.load(std::memory_order_acquire) != 0) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto elapsed =
-          std::chrono::duration_cast<std::chrono::milliseconds>(now - start)
-            .count();
-
-        if (elapsed >= timeoutMs) {
-            SPDLOG_ERROR("RPC quiesce timed out after {}ms with {} in-flight calls",
-                         timeoutMs,
-                         inFlightCalls.load(std::memory_order_acquire));
-            throw std::runtime_error("RPC quiesce timed out");
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
 }
 
 void RpcContext::endQuiesce()

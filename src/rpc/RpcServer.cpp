@@ -78,46 +78,61 @@ void RpcServer::doAsyncRecv(transport::Message& message)
         case faabric::rpc::RpcMessageType::RESPONSE: {
             faabric::RpcResponse resp;
             if (!resp.ParseFromArray(message.data().data(),
-                                     message.data().size())) {
-                SPDLOG_ERROR("Failed to parse RpcResponse");
+                                    message.data().size())) {
+                SPDLOG_ERROR("RPC - Failed to parse RpcResponse");
                 return;
             }
 
             auto& registry = getRpcContextRegistry();
+            const uint32_t requestId = resp.requestid();
 
-            auto ctxId = registry.getContextIdForRequest(resp.requestid());
-            if (!ctxId) {
-                SPDLOG_WARN("RPC - Orphaned response {}", resp.requestid());
+            auto msgIdxOpt = registry.getMsgIdxForRequest(requestId);
+            if (!msgIdxOpt.has_value()) {
+                SPDLOG_WARN("RPC - Orphaned response for unknown request {}",
+                            requestId);
+                return;
+            }
+            const int32_t msgIdx = msgIdxOpt.value();
+
+            // Local context still here, deliver directly.
+            if (auto ctx = registry.getContextForRequest(requestId)) {
+                SPDLOG_TRACE("RPC - Routing response {} to msg {}",
+                             requestId, msgIdx);
+                ctx->onResponseReceived(resp);
                 return;
             }
 
-            auto ctx = registry.getContextForRequest(resp.requestid());
-            if (ctx) {
-                SPDLOG_TRACE("RPC - Routing response {} to context {}", 
-                             resp.requestid(), ctx->getContextId());
-                ctx->onResponseReceived(resp);
-            } else if (auto forwardHost = 
-                    registry.getForwardingAddress(ctxId.value())) {
-                SPDLOG_TRACE("RPC - Proxying response {} to migrated host {}",
-                             resp.requestid(),
-                             forwardHost.value());
-        
-                // Re-serialize the response
-                std::string buffer;
-                resp.SerializeToString(&buffer);
-
-                // Forward to the new host's async port
-                faabric::transport::MessageEndpointClient client(
-                    forwardHost.value(), 
-                    RPC_ASYNC_PORT, 
-                    RPC_SYNC_PORT, 
-                    5000
-                );
-                
-                client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE, 
-                                reinterpret_cast<const uint8_t*>(buffer.data()), 
-                                buffer.size());
+            // Context has migrated away, proxy to the new host if known.
+            auto forwardHost = registry.getForwardingAddress(msgIdx);
+            if (!forwardHost.has_value()) {
+                SPDLOG_WARN("RPC - Response {} for msg {} has no local context "
+                            "and no forwarding address; dropping",
+                            requestId, msgIdx);
+                registry.clearRequest(requestId);
+                return;
             }
+
+            SPDLOG_TRACE("RPC - Proxying response {} for msg {} to migrated host {}",
+                        requestId, msgIdx, forwardHost.value());
+
+            // TODO: maybe pool MessageEndpointClient instances per host instead of
+            // constructing one per forwarded response.
+            std::string buffer;
+            if (!resp.SerializeToString(&buffer)) {
+                SPDLOG_ERROR("RPC - Failed to re-serialise response {} for proxy",
+                             requestId);
+                return;
+            }
+
+            faabric::transport::MessageEndpointClient client(
+                forwardHost.value(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+
+            client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE,
+                             reinterpret_cast<const uint8_t*>(buffer.data()),
+                             buffer.size());
+
+            // Hand-off complete — the migrated host owns this request now.
+            registry.clearRequest(requestId);
             break;
         }
         default: {
