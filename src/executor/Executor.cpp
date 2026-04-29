@@ -376,6 +376,12 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
         // Set up context
         ExecutorContext::set(this, task.req, task.messageIndex);
 
+        if (msg.isrpc()) {
+            auto rpcCtx = std::make_shared<faabric::rpc::RpcContext>(msg.id());
+            faabric::rpc::getRpcContextRegistry().registerContext(
+                msg.id(), rpcCtx);
+        }
+
         // Execute the task
         int32_t returnValue;
         try {

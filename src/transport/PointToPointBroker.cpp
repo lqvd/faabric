@@ -919,10 +919,6 @@ void PointToPointBroker::postMigrationHook(faabric::Message& msg)
         // Get-or-initialise to initialise the world in case we are migrating
         // to a completely new world
         faabric::mpi::getMpiWorldRegistry().getOrInitialiseWorld(msg);
-    } else if (msg.isrpc()) {
-        auto& registry = faabric::rpc::getRpcContextRegistry();
-        auto ctx = std::make_shared<faabric::rpc::RpcContext>(msg.id());
-        registry.registerContext(msg.id(), ctx);
     }
 
     SPDLOG_DEBUG("{}:{}:{} exiting post-migration hook",
