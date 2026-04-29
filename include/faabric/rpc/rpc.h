@@ -46,6 +46,8 @@ int32_t __faasm_rpc_unary_start(int32_t channelId,
                                 int32_t reqLen, 
                                 int32_t* outRequestId);
 
+int32_t __faasm_rpc_test_response(int32_t requestId);
+
 void __faasm_rpc_wait_migratable(int32_t requestId, 
                                  int32_t wasmFuncPtr, 
                                  int32_t* state, 
@@ -58,15 +60,5 @@ int32_t __faasm_rpc_get_response(int32_t requestId,
 #ifdef __cplusplus
 }
 #endif
-
-namespace faabric::rpc {
-
-enum RpcMessageType
-{
-    INVOKE = 0,
-    RESPONSE = 1,
-};
-
-}   // namespace faabric::rpc
 
 #endif
