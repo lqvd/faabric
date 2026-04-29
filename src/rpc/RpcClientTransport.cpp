@@ -1,6 +1,7 @@
 #include <faabric/rpc/RpcClientTransport.h>
 
 #include <faabric/rpc/rpc.h>
+#include <faabric/rpc/RpcMessageType.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/config.h>
 #include <faabric/util/logging.h>

@@ -3,6 +3,7 @@
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcMessageType.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
 #include <faabric/util/network.h>
