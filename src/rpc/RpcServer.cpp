@@ -101,10 +101,26 @@ void RpcServer::doAsyncRecv(transport::Message& message)
 
             // Has it migrated?
             auto forwardHost = registry.getForwardingAddress(msgIdx);
-            if (!forwardHost.has_value()) {
-                SPDLOG_WARN("RPC - Response {} for msg {} has no local context "
-                            "and no forwarding address; dropping",
-                            requestId, msgIdx);
+            if (forwardHost.has_value()) {
+                SPDLOG_INFO("RPC - Proxying response {} for msg {} to migrated host {}",
+                            requestId, msgIdx, forwardHost.value());
+                // TODO: maybe pool MessageEndpointClient instances per host
+                // instead of constructing one per forwarded response.
+                std::string buffer;
+                if (!resp.SerializeToString(&buffer)) {
+                    SPDLOG_ERROR("RPC - Cannot serialise response {} for proxy",
+                                requestId);
+                    return;
+                }
+
+                faabric::transport::MessageEndpointClient client(
+                    forwardHost.value(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+
+                client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE,
+                                reinterpret_cast<const uint8_t*>(buffer.data()),
+                                buffer.size());
+
+                // Hand-off complete — the migrated host owns this request now.
                 registry.clearRequest(requestId);
                 return;
             }
@@ -117,27 +133,9 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
-            SPDLOG_INFO("RPC - Proxying response {} for msg {} to migrated host {}",
-                        requestId, msgIdx, forwardHost.value());
-
-            // TODO: maybe pool MessageEndpointClient instances per host instead of
-            // constructing one per forwarded response.
-            std::string buffer;
-            if (!resp.SerializeToString(&buffer)) {
-                SPDLOG_ERROR("RPC - Failed to re-serialise response {} for proxy",
-                             requestId);
-                return;
-            }
-
-            faabric::transport::MessageEndpointClient client(
-                forwardHost.value(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
-
-            client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE,
-                             reinterpret_cast<const uint8_t*>(buffer.data()),
-                             buffer.size());
-
-            // Hand-off complete — the migrated host owns this request now.
-            registry.clearRequest(requestId);
+            SPDLOG_WARN("RPC - Response {} for msg {} has no local context "
+                        "and no forwarding address; dropping",
+                        requestId, msgIdx);
             break;
         }
         default: {
