@@ -32,6 +32,9 @@ class RpcClientTransport
     // Non-consuming readiness check.
     bool testResponse(uint32_t requestId);
 
+    // Non-consuming get.  Returns false if unknown or not ready.
+    bool peekResponse(uint32_t requestId, faabric::RpcResponse& out);
+
     // Consuming get. Returns false if unknown or not ready.
     bool getResponse(uint32_t requestId, faabric::RpcResponse& out);
 
@@ -42,6 +45,7 @@ class RpcClientTransport
     void onResponseReceived(const faabric::RpcResponse& resp);
 
     bool hasPendingRequest(uint32_t requestId);
+
     void eraseRequest(uint32_t requestId);
 
   private:

@@ -75,7 +75,6 @@ void RpcContextRegistry::setForwardingAddress(int32_t msgIdx,
                                               std::string newHost) 
 {
     forwardingTable.insertOrAssign(msgIdx, std::move(newHost));
-    msgIdxToContext.erase(msgIdx); 
 }
 
 std::optional<std::string> RpcContextRegistry::getForwardingAddress(

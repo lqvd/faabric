@@ -259,6 +259,8 @@ message RpcMigrationState {
     message RpcPendingRequest {
         uint32 requestId = 1;
         int32 channelId = 2; 
+        bytes cachedResponse = 3;
+        int32 cachedStatusCode = 4;
     }
 
     repeated RpcChannelState channels = 1;

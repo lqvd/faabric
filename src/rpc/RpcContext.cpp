@@ -140,8 +140,7 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
     });
 
     // Serialize In-Flight Requests
-    requestToChannel.inspectAll([&migrationCtx](const uint32_t& reqId, 
-                                                const int32_t& chId) {
+    requestToChannel.inspectAll([&](const uint32_t& reqId, const int32_t& chId) {
         auto* pendingReq = migrationCtx.add_pendingrequests();
         pendingReq->set_requestid(reqId);
         pendingReq->set_channelid(chId);
@@ -165,13 +164,24 @@ void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& mig
     for (const auto& pendingReq : migrationCtx.pendingrequests()) {
         uint32_t reqId = pendingReq.requestid();
         int32_t chId = pendingReq.channelid();
-        
-        requestToChannel.insertOrAssign(std::move(reqId), std::move(chId));
 
-        // Recreate the transport socket lazily
+        requestToChannel.insertOrAssign(reqId, std::move(chId));
+
         ChannelInfo info = getChannel(chId);
         auto transport = getOrCreateTransport(info);
-        requestToTransport.insertOrAssign(std::move(reqId), std::move(transport));
+        requestToTransport.insertOrAssign(reqId, std::move(transport));
+
+        // If a response was cached during migration, inject it into the
+        // new transport so testResponse/getResponse work immediately
+        if (!pendingReq.cachedresponse().empty()) {
+            faabric::RpcResponse resp;
+            resp.set_requestid(reqId);
+            resp.set_statuscode(pendingReq.cachedstatuscode());
+            resp.set_payload(pendingReq.cachedresponse());
+            transport->onResponseReceived(resp);
+            SPDLOG_INFO("RPC - Injected cached response for req {} on restore",
+                        reqId);
+        }
 
         getRpcContextRegistry().registerInFlightRequest(reqId, ownerMsgId);
     }

@@ -66,6 +66,24 @@ bool RpcClientTransport::testResponse(uint32_t requestId)
     return it->second.ready;
 }
 
+bool RpcClientTransport::peekResponse(uint32_t requestId,
+                                       faabric::RpcResponse& out)
+{
+    std::lock_guard<std::mutex> lock(mx);
+
+    auto it = ops.find(requestId);
+    if (it == ops.end() || !it->second.ready) {
+        return false;
+    }
+
+    if (it->second.failed) {
+        throw std::runtime_error("RPC operation completed with failure");
+    }
+
+    out = it->second.response;
+    return true;
+}
+
 bool RpcClientTransport::getResponse(uint32_t requestId,
                                      faabric::RpcResponse& out)
 {

@@ -48,10 +48,9 @@ int32_t __faasm_rpc_unary_start(int32_t channelId,
 
 int32_t __faasm_rpc_test_response(int32_t requestId);
 
-void __faasm_rpc_wait_migratable(int32_t requestId, 
-                                 int32_t wasmFuncPtr, 
-                                 int32_t* state, 
-                                 int32_t resumeStep);
+void __faasm_rpc_wait_migratable(int32_t requestId,
+                                 int32_t wasmResumeTarget,
+                                 int32_t frameOffset);
 
 int32_t __faasm_rpc_get_response(int32_t requestId,
                                  int32_t* outRespOffset, 

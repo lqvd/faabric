@@ -45,6 +45,8 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
+            SPDLOG_INFO("RPC - Request arrived for requestId={}", req.requestid());
+
             auto it = routingTable.find(req.method());
             if (it == routingTable.end()) {
                 SPDLOG_ERROR("RPC - Unknown method {}", req.method());
@@ -84,6 +86,8 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
+            SPDLOG_INFO("RPC - Response arrived for requestId={}", resp.requestid());
+
             auto& registry = getRpcContextRegistry();
             const uint32_t requestId = resp.requestid();
 
@@ -95,15 +99,7 @@ void RpcServer::doAsyncRecv(transport::Message& message)
             }
             const int32_t msgIdx = msgIdxOpt.value();
 
-            // Local context still here, deliver directly.
-            if (auto ctx = registry.getContextForRequest(requestId)) {
-                SPDLOG_TRACE("RPC - Routing response {} to msg {}",
-                             requestId, msgIdx);
-                ctx->onResponseReceived(resp);
-                return;
-            }
-
-            // Context has migrated away, proxy to the new host if known.
+            // Has it migrated?
             auto forwardHost = registry.getForwardingAddress(msgIdx);
             if (!forwardHost.has_value()) {
                 SPDLOG_WARN("RPC - Response {} for msg {} has no local context "
@@ -113,7 +109,15 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
-            SPDLOG_TRACE("RPC - Proxying response {} for msg {} to migrated host {}",
+            // Local context still here, deliver directly.
+            if (auto ctx = registry.getContextForRequest(requestId)) {
+                SPDLOG_INFO("RPC - Routing response {} to msg {}",
+                             requestId, msgIdx);
+                ctx->onResponseReceived(resp);
+                return;
+            }
+
+            SPDLOG_INFO("RPC - Proxying response {} for msg {} to migrated host {}",
                         requestId, msgIdx, forwardHost.value());
 
             // TODO: maybe pool MessageEndpointClient instances per host instead of
