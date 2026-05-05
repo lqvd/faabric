@@ -103,7 +103,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     faabric::util::ConcurrentMap<int32_t, ChannelInfo> channels;
     faabric::util::ConcurrentMap<uint32_t, int32_t> requestToChannel;
 
-    // Owned here so they survive migration serialization/restore
     mutable std::mutex opsMx;
     std::condition_variable opsCv;
     std::unordered_map<uint32_t, RpcOp> ops;

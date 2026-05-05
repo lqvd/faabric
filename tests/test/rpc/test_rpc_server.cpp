@@ -305,22 +305,25 @@ TEST_CASE_METHOD(RpcServerFixture,
 
     for (int i = 0; i < N; i++) {
         threads.emplace_back([&, i] {
-            auto localCtx = std::make_shared<RpcContext>();
-            getRpcContextRegistry().registerContext(localCtx->getContextId(),
-                                                    localCtx);
+            // Each thread gets its own context under a unique synthetic msgId.
+            // nextTestMsgId() comes from RpcTestFixture and is process-unique.
+            int32_t threadMsgId = nextTestMsgId();
 
-            int32_t ch = localCtx->createChannel("faabric://localhost");
+            auto localCtx = std::make_shared<RpcContext>(threadMsgId);
+            getRpcContextRegistry().registerContext(threadMsgId, localCtx);
+
+            int32_t  ch  = localCtx->createChannel("faabric://localhost");
             uint32_t rid = localCtx->startUnary(ch, "/pkg.Svc/Block", nullptr, 0);
-            
+
             while (!localCtx->testResponse(rid))
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            
+
             faabric::RpcResponse resp;
             localCtx->getResponse(rid, resp);
             statuses.at(i) = resp.statuscode();
-            localCtx->closeChannel(ch);
 
-            getRpcContextRegistry().removeContext(localCtx->getContextId());
+            localCtx->closeChannel(ch);
+            getRpcContextRegistry().removeContext(threadMsgId);
         });
     }
 

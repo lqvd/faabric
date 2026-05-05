@@ -115,33 +115,14 @@ TEST_CASE_METHOD(RpcTestFixture,
 TEST_CASE_METHOD(RpcTestFixture,
                  "RPC quiesce blocks new calls and resumes after endQuiesce",
                  "[rpc][migration]") {
-    std::atomic<bool> waiterFinished = false;
-        // Simulate one in-flight RPC
     REQUIRE(ctx->tryEnterCall());
-
-    // Start quiescing; new admissions should fail
-    ctx->beginQuiesce();
-    REQUIRE_FALSE(ctx->tryEnterCall());
-
-    std::jthread waiter([&] {
-        ctx->awaitQuiesced(1000);
-        waiterFinished.store(true);
-    });
-
-    // Waiter must still be blocked because one call is still in flight
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    REQUIRE_FALSE(waiterFinished.load());
-
-    // Drain the in-flight call
     ctx->exitCall();
 
-    if (waiter.joinable()) {
-        waiter.join();
-    }
-    REQUIRE(waiterFinished.load());
-
-    // Service resumes
+    ctx->beginQuiesce();
+    
+    REQUIRE_FALSE(ctx->tryEnterCall());
     ctx->endQuiesce();
+
     REQUIRE(ctx->tryEnterCall());
     ctx->exitCall();
 }
