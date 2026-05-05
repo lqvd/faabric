@@ -1,15 +1,14 @@
 #pragma once
-
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcClientTransport.h>
 #include <faabric/util/concurrent_map.h>
-
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace faabric::rpc {
@@ -20,6 +19,13 @@ struct ChannelInfo
     bool isFaabric;
     std::string host;
     int port;
+};
+
+struct RpcOp
+{
+    bool ready = false;
+    bool failed = false;
+    faabric::RpcResponse response;
 };
 
 enum RpcContextMode
@@ -72,6 +78,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     void eraseRequest(uint32_t requestId);
 
+    // Called by the RPC server thread when a response arrives over the network
     void onResponseReceived(const faabric::RpcResponse& resp);
 
     // ------
@@ -96,9 +103,13 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     faabric::util::ConcurrentMap<int32_t, ChannelInfo> channels;
     faabric::util::ConcurrentMap<uint32_t, int32_t> requestToChannel;
 
+    // Owned here so they survive migration serialization/restore
+    mutable std::mutex opsMx;
+    std::condition_variable opsCv;
+    std::unordered_map<uint32_t, RpcOp> ops;
+
     std::atomic<RpcContextMode> context{ RUNNING };
     std::atomic<uint32_t> inFlightCalls{ 0 };
-
     mutable std::mutex quiesceMx;
     std::condition_variable quiesceCv;
 
@@ -108,13 +119,11 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     ConcurrentMapToTransport<std::string> targetToTransport;
     ConcurrentMapToTransport<uint32_t> requestToTransport;
 
-    int32_t getOwnerMsgId() const { return ownerMsgId; }
-
     static ChannelInfo parseChannelInfo(const std::string& targetUri);
+
     static std::string makeTargetKey(const ChannelInfo& info);
 
-    std::shared_ptr<RpcClientTransport> getOrCreateTransport(
-      const ChannelInfo& info);
+    std::shared_ptr<RpcClientTransport> getOrCreateTransport(const ChannelInfo& info);
 };
 
 } // namespace faabric::rpc

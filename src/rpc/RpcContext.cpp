@@ -15,6 +15,7 @@
 
 namespace faabric::rpc {
 
+static constexpr int32_t kNoCachedRespStatus = -1;
 static constexpr std::string_view kFaabricScheme = "faabric://";
 
 std::atomic<uint32_t> RpcContext::nextRequestId{1};
@@ -29,7 +30,7 @@ static std::pair<std::string, int> parseFaabricUri(const std::string& uri)
     std::string rest = uri.substr(kFaabricScheme.size());
     auto colon = rest.rfind(':');
     if (colon == std::string::npos) {
-        return { rest, RPC_SYNC_PORT };
+        return { rest, RPC_ASYNC_PORT };
     }
 
     std::string host = rest.substr(0, colon);
@@ -140,10 +141,22 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
     });
 
     // Serialize In-Flight Requests
+    std::lock_guard<std::mutex> lock(opsMx);
     requestToChannel.inspectAll([&](const uint32_t& reqId, const int32_t& chId) {
         auto* pendingReq = migrationCtx.add_pendingrequests();
         pendingReq->set_requestid(reqId);
         pendingReq->set_channelid(chId);
+        pendingReq->set_cachedstatuscode(kNoCachedRespStatus);
+
+        auto it = ops.find(reqId);
+        if (it != ops.end() && it->second.ready) {
+            pendingReq->set_cachedresponse(it->second.response.payload());
+            pendingReq->set_cachedstatuscode(it->second.response.statuscode());
+            SPDLOG_INFO("RPC - Cached response for req {} (Status: {}, "
+                        "Payload Size: {})",
+                        reqId, it->second.response.statuscode(),
+                        it->second.response.payload().size());
+        }
     });
 
     return migrationCtx;
@@ -161,32 +174,40 @@ void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& mig
     }
     nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
 
+    SPDLOG_INFO("RPC - Deserialising {} pending requests",
+                migrationCtx.pendingrequests_size());
+
     for (const auto& pendingReq : migrationCtx.pendingrequests()) {
-        uint32_t reqId = pendingReq.requestid();
-        int32_t chId = pendingReq.channelid();
+        uint32_t requestId = pendingReq.requestid();
+        int32_t channelId = pendingReq.channelid();
 
-        requestToChannel.insertOrAssign(reqId, std::move(chId));
+        requestToChannel.insertOrAssign(requestId, std::move(channelId));
 
-        ChannelInfo info = getChannel(chId);
+        ChannelInfo info = getChannel(channelId);
         auto transport = getOrCreateTransport(info);
-        requestToTransport.insertOrAssign(reqId, std::move(transport));
+        requestToTransport.insertOrAssign(requestId, std::move(transport));
 
-        // If a response was cached during migration, inject it into the
-        // new transport so testResponse/getResponse work immediately
-        if (!pendingReq.cachedresponse().empty()) {
-            faabric::RpcResponse resp;
-            resp.set_requestid(reqId);
-            resp.set_statuscode(pendingReq.cachedstatuscode());
-            resp.set_payload(pendingReq.cachedresponse());
-            transport->onResponseReceived(resp);
-            SPDLOG_INFO("RPC - Injected cached response for req {} on restore",
-                        reqId);
+        // Restore the op slot... coroutine will find it ready when it resumes
+        {
+            std::lock_guard<std::mutex> lock(opsMx);
+            RpcOp op;
+            if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
+                op.ready = true;
+                op.failed = false;
+                op.response.set_requestid(requestId);
+                op.response.set_statuscode(pendingReq.cachedstatuscode());
+                op.response.set_payload(pendingReq.cachedresponse());
+                SPDLOG_INFO("RPC - Pre-populated response for req {} (Status: {})",
+                            requestId, pendingReq.cachedstatuscode());
+            }
+            // If no cached response, op.ready = false and coroutine will block
+            // normally and onResponseReceived will wake it when it arrives
+            ops.emplace(requestId, std::move(op));
         }
 
-        getRpcContextRegistry().registerInFlightRequest(reqId, ownerMsgId);
+        getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
     }
 
-    // Register the context itself
     getRpcContextRegistry().registerContext(ownerMsgId, shared_from_this());
 }
 
@@ -196,7 +217,6 @@ uint32_t RpcContext::startUnary(int32_t channelId,
                                 int32_t reqLength)
 {
     ChannelInfo info = getChannel(channelId);
-
     if (!info.isFaabric) {
         throw std::runtime_error("External RPC is not implemented");
     }
@@ -204,76 +224,91 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     auto transport = getOrCreateTransport(info);
 
     const uint32_t requestId =
-      nextRequestId.fetch_add(1, std::memory_order_relaxed);
+        nextRequestId.fetch_add(1, std::memory_order_relaxed);
+
+    // Register the op in RpcContext before sending, so onResponseReceived
+    // can never arrive before the slot exists
+    {
+        std::lock_guard<std::mutex> lock(opsMx);
+        ops.emplace(requestId, RpcOp{});
+    }
+
+    getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
+    requestToChannel.insertOrAssign(requestId, std::move(channelId));
 
     faabric::RpcRequest req;
     req.set_method(method);
     req.set_payload(reqBuffer, reqLength);
     req.set_requestid(requestId);
 
-    getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
-
-    // Remember the channel so we can rebuild on migration.
-    requestToChannel.insertOrAssign(requestId, std::move(channelId));
+    SPDLOG_INFO("[RPC StartUnary]5");
 
     try {
         transport->sendRequestAsync(requestId, req);
     } catch (...) {
-        getRpcContextRegistry().clearRequest(requestId);
+        std::lock_guard<std::mutex> lock(opsMx);
+        ops.erase(requestId);
         requestToChannel.erase(requestId);
+        requestToTransport.erase(requestId);
+        getRpcContextRegistry().clearRequest(requestId);
+        SPDLOG_INFO("[RPC StartUnary] THROWING!");
         throw;
     }
-
     requestToTransport.insertOrAssign(requestId, std::move(transport));
+
     return requestId;
 }
 
 bool RpcContext::testResponse(uint32_t requestId)
 {
-    auto transport = requestToTransport.get(requestId);
-    if (!transport.has_value()) {
+    std::lock_guard<std::mutex> lock(opsMx);
+    auto it = ops.find(requestId);
+    if (it == ops.end()) {
         return false;
     }
-
-    return transport.value()->testResponse(requestId);
+    return it->second.ready;
 }
 
 bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
 {
-    auto transport = requestToTransport.get(requestId);
-    if (!transport.has_value()) {
+    std::unique_lock<std::mutex> lock(opsMx);
+    auto it = ops.find(requestId);
+    if (it == ops.end() || !it->second.ready) {
         return false;
     }
 
-    if (transport.value()->getResponse(requestId, out)) {
-        requestToTransport.erase(requestId);
-        requestToChannel.erase(requestId);
-
-        getRpcContextRegistry().clearRequest(requestId);
-        return true;
+    if (it->second.failed) {
+        ops.erase(it);
+        throw std::runtime_error("RPC operation completed with failure");
     }
 
-    return false;
+    out = std::move(it->second.response);
+    ops.erase(it);
+    lock.unlock();
+
+    requestToTransport.erase(requestId);
+    requestToChannel.erase(requestId);
+    getRpcContextRegistry().clearRequest(requestId);
+    return true;
 }
 
 bool RpcContext::hasPendingRequest(uint32_t requestId)
 {
-    auto transport = requestToTransport.get(requestId);
-    if (!transport.has_value()) {
+    std::lock_guard<std::mutex> lock(opsMx);
+    auto it = ops.find(requestId);
+    if (it == ops.end()) {
         return false;
     }
-
-    return transport.value()->hasPendingRequest(requestId);
+    return !it->second.ready;
 }
 
 void RpcContext::eraseRequest(uint32_t requestId)
 {
-    auto transport = requestToTransport.get(requestId);
-    if (transport.has_value()) {
-        transport.value()->eraseRequest(requestId);
-        requestToTransport.erase(requestId);
+    {
+        std::lock_guard<std::mutex> lock(opsMx);
+        ops.erase(requestId);
     }
-
+    requestToTransport.erase(requestId);
     requestToChannel.erase(requestId);
     getRpcContextRegistry().clearRequest(requestId);
 }
@@ -320,13 +355,19 @@ void RpcContext::exitCall()
 
 void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
 {
-    auto transport = requestToTransport.get(resp.requestid());
-    if (!transport.has_value()) {
-        SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
-        return;
+    {
+        std::lock_guard<std::mutex> lock(opsMx);
+        auto it = ops.find(resp.requestid());
+        if (it == ops.end()) {
+            SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
+            return;
+        }
+        it->second.failed = false;
+        it->second.response = resp;
+        it->second.ready = true;
     }
-
-    transport.value()->onResponseReceived(resp);
+    opsCv.notify_all();
+    SPDLOG_INFO("RPC - Received response for {}", resp.requestid());
 }
 
 } // namespace faabric::rpc
