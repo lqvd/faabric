@@ -19,7 +19,7 @@ namespace tests {
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server routes to registered handler",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     bool handlerCalled = false;
     registerHandler("/pkg.Svc/Method",
@@ -38,7 +38,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server returns UNIMPLEMENTED for unknown method",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     int32_t ch = localChannel();
     auto resp = doCall(ch, "/missing/method");
@@ -50,7 +50,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server routes multiple methods independently",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     std::atomic<int> calledA{ 0 }, calledB{ 0 };
     registerHandler("/pkg.Svc/MethodA",
@@ -77,7 +77,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server last registration wins for duplicate method",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     registerHandler("/pkg.Svc/Method",
       [](const uint8_t*, size_t, std::vector<uint8_t>& out) {
@@ -100,7 +100,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server delivers request payload to handler",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     std::string captured;
     registerHandler("/pkg.Svc/Echo",
@@ -118,7 +118,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server echoes response payload to caller",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     registerHandler("/pkg.Svc/Echo",
       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
@@ -136,7 +136,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server produces no payload when handler writes nothing",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     registerHandler("/pkg.Svc/Noop",
       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
@@ -153,7 +153,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server receives zero length when payload is empty",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     size_t receivedLen = 1;
     registerHandler("/pkg.Svc/Noop",
@@ -171,7 +171,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server preserves binary payload bytes",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     const std::string reqPayload("\x00\x01\x02\x7f\x80\xff", 6);
     registerHandler("/pkg.Svc/Binary",
@@ -190,7 +190,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server handles large payload",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     std::string reqPayload(1024 * 1024, '\0');
     for (size_t i = 0; i < reqPayload.size(); i++)
@@ -213,7 +213,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server propagates non-zero status from handler",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     registerHandler("/pkg.Svc/Fail",
       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
@@ -230,7 +230,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server response carries correct request ID",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     registerHandler("/pkg.Svc/Noop",
       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
@@ -247,7 +247,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server UNIMPLEMENTED response carries correct request ID",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     int32_t ch = localChannel();
     uint32_t requestId = ctx->startUnary(ch, "/missing/method", nullptr, 0);
@@ -260,7 +260,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server handles sequential requests on one channel",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     std::atomic<int> callCount{ 0 };
     registerHandler("/pkg.Svc/Count",
@@ -281,7 +281,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "RPC server invokes handlers concurrently",
-                 "[rpc][server]")
+                 "[rpc]")
 {
     // Thread pool is hardcoded to 4 in RpcServer::RpcServer().
     constexpr int N = 4;

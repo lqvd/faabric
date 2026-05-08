@@ -12,7 +12,7 @@ namespace tests {
 
 TEST_CASE_METHOD(RpcTestFixture,
                  "Channel reports target URI",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     int32_t id = ctx->createChannel("faabric://localhost");
     REQUIRE(ctx->getChannel(id).targetUri == "faabric://localhost");
@@ -20,7 +20,7 @@ TEST_CASE_METHOD(RpcTestFixture,
 
 TEST_CASE_METHOD(RpcTestFixture,
                  "createChannel rejects external URI",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     REQUIRE_THROWS_AS(ctx->createChannel("https://example.com:443"),
                       std::runtime_error);
@@ -28,7 +28,7 @@ TEST_CASE_METHOD(RpcTestFixture,
 
 TEST_CASE_METHOD(RpcTestFixture,
                  "createChannel error contains target URI",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     const std::string uri = "https://example.com:443";
     
@@ -38,7 +38,7 @@ TEST_CASE_METHOD(RpcTestFixture,
 
 // TEST_CASE_METHOD(RpcTestFixture,
 //                  "Channel call fails when no server is listening",
-//                  "[rpc][transport]")
+//                  "[rpc]")
 // {
 //     faabric::RpcResponse result;
 
@@ -73,7 +73,7 @@ TEST_CASE_METHOD(RpcTestFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "Channel unary call round-trip",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     registerHandler("/pkg.TestSvc/TestMethod",
       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
@@ -92,7 +92,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "Channel preserves binary payload bytes",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     const std::string reqPayload("\x00\x01\x02\x7f\x80\xff", 6);
     registerHandler("/pkg.TestSvc/Binary",
@@ -113,7 +113,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "Channel maps non-zero remote status",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     registerHandler("/pkg.TestSvc/TestMethod",
       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
@@ -130,7 +130,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 }
 
 TEST_CASE_METHOD(RpcServerFixture,
-                 "Channel handles unregistered method", "[rpc][transport]")
+                 "Channel handles unregistered method", "[rpc]")
 {
     int32_t ch = localChannel();
     auto resp = doCall(ch, "/missing/method");
@@ -142,7 +142,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                 "Channel handles empty payload and empty response",
-                "[rpc][transport]")
+                "[rpc]")
 {
     registerHandler("/pkg.TestSvc/Empty",
       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
@@ -160,7 +160,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "Channel supports large payload roundtrip",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     std::string reqPayload(1024 * 1024, '\0');
     for (size_t i = 0; i < reqPayload.size(); i++)
@@ -184,7 +184,7 @@ TEST_CASE_METHOD(RpcServerFixture,
 
 TEST_CASE_METHOD(RpcServerFixture,
                  "Channel supports repeated calls on one channel",
-                 "[rpc][transport]")
+                 "[rpc]")
 {
     registerHandler("/pkg.TestSvc/TestMethod",
       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {

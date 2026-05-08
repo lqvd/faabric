@@ -4,6 +4,7 @@
 
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcContext.h>
+#include <faabric/transport/common.h>
 #include <faabric/transport/MessageEndpoint.h>
 
 using namespace faabric::rpc;
@@ -100,7 +101,7 @@ TEST_CASE_METHOD(RpcTestFixture,
     auto ch = ctx->getChannel(id);
 
     REQUIRE(ch.targetUri == "faabric://127.0.0.1");
-    REQUIRE(ch.port == 8013);
+    REQUIRE(ch.port == RPC_ASYNC_PORT);
 }
 
 TEST_CASE_METHOD(RpcTestFixture,
