@@ -261,6 +261,7 @@ message RpcMigrationState {
         int32 channelId = 2; 
         int32 cachedStatusCode = 3;
         bytes cachedResponse = 4;
+        int64 timeoutremaining = 5;
     }
 
     repeated RpcChannelState channels = 1;
