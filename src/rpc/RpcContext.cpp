@@ -11,6 +11,7 @@
 #include <chrono>
 #include <stdexcept>
 #include <string_view>
+#include <optional>
 #include <thread>
 
 namespace faabric::rpc {
@@ -149,13 +150,18 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
         pendingReq->set_cachedstatuscode(kNoCachedRespStatus);
 
         auto it = ops.find(reqId);
-        if (it != ops.end() && it->second.ready) {
-            pendingReq->set_cachedresponse(it->second.response.payload());
-            pendingReq->set_cachedstatuscode(it->second.response.statuscode());
-            SPDLOG_INFO("RPC - Cached response for req {} (Status: {}, "
-                        "Payload Size: {})",
-                        reqId, it->second.response.statuscode(),
-                        it->second.response.payload().size());
+        if (it != ops.end()) {
+            if (it->second.ready) {
+                pendingReq->set_cachedresponse(it->second.response.payload());
+                pendingReq->set_cachedstatuscode(it->second.response.statuscode());
+            }
+            if (it->second.deadline.has_value()) {
+                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    it->second.deadline.value() - std::chrono::steady_clock::now()).count();
+                pendingReq->set_timeoutremaining(std::max(0L, remaining));
+            } else {
+                pendingReq->set_timeoutremaining(-1);
+            }
         }
     });
 
@@ -193,12 +199,13 @@ void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& mig
             RpcOp op;
             if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
                 op.ready = true;
-                op.failed = false;
                 op.response.set_requestid(requestId);
                 op.response.set_statuscode(pendingReq.cachedstatuscode());
                 op.response.set_payload(pendingReq.cachedresponse());
-                SPDLOG_INFO("RPC - Pre-populated response for req {} (Status: {})",
-                            requestId, pendingReq.cachedstatuscode());
+            }
+            if (pendingReq.timeoutremaining() >= 0) {
+                op.deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(pendingReq.timeoutremaining());
             }
             // If no cached response, op.ready = false and coroutine will block
             // normally and onResponseReceived will wake it when it arrives
@@ -214,7 +221,8 @@ void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& mig
 uint32_t RpcContext::startUnary(int32_t channelId,
                                 const std::string& method,
                                 const uint8_t* reqBuffer,
-                                int32_t reqLength)
+                                int32_t reqLength,
+                                int32_t timeoutMs)
 {
     ChannelInfo info = getChannel(channelId);
     if (!info.isFaabric) {
@@ -230,7 +238,12 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     // can never arrive before the slot exists
     {
         std::lock_guard<std::mutex> lock(opsMx);
-        ops.emplace(requestId, RpcOp{});
+        RpcOp op;
+        if (timeoutMs >= 0) {
+            op.deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+        }
+        ops.emplace(requestId, std::move(op));
     }
 
     getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
@@ -241,8 +254,6 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     req.set_payload(reqBuffer, reqLength);
     req.set_requestid(requestId);
 
-    SPDLOG_INFO("[RPC StartUnary]5");
-
     try {
         transport->sendRequestAsync(requestId, req);
     } catch (...) {
@@ -251,7 +262,6 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         requestToChannel.erase(requestId);
         requestToTransport.erase(requestId);
         getRpcContextRegistry().clearRequest(requestId);
-        SPDLOG_INFO("[RPC StartUnary] THROWING!");
         throw;
     }
     requestToTransport.insertOrAssign(requestId, std::move(transport));
@@ -266,6 +276,15 @@ bool RpcContext::testResponse(uint32_t requestId)
     if (it == ops.end()) {
         return false;
     }
+    if (!it->second.ready && it->second.deadline.has_value() &&
+        std::chrono::steady_clock::now() >= it->second.deadline.value()) {
+        // Synthesize a DEADLINE_EXCEEDED response.
+        it->second.ready = true;
+        it->second.response.set_requestid(requestId);
+        it->second.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
+        it->second.response.set_errormessage("deadline exceeded");
+        return true;
+    }
     return it->second.ready;
 }
 
@@ -273,13 +292,20 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
 {
     std::unique_lock<std::mutex> lock(opsMx);
     auto it = ops.find(requestId);
-    if (it == ops.end() || !it->second.ready) {
+    if (it == ops.end()) {
         return false;
     }
 
-    if (it->second.failed) {
-        ops.erase(it);
-        throw std::runtime_error("RPC operation completed with failure");
+    if (!it->second.ready && it->second.deadline.has_value() &&
+        std::chrono::steady_clock::now() >= it->second.deadline.value()) {
+        it->second.ready = true;
+        it->second.response.set_requestid(requestId);
+        it->second.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
+        it->second.response.set_errormessage("deadline exceeded");
+    }
+
+    if (!it->second.ready) {
+        return false;
     }
 
     out = std::move(it->second.response);
@@ -362,11 +388,9 @@ void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
             SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
             return;
         }
-        it->second.failed = false;
         it->second.response = resp;
         it->second.ready = true;
     }
-    opsCv.notify_all();
     SPDLOG_INFO("RPC - Received response for {}", resp.requestid());
 }
 

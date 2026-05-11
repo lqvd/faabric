@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,8 +25,8 @@ struct ChannelInfo
 struct RpcOp
 {
     bool ready = false;
-    bool failed = false;
     faabric::RpcResponse response;
+    std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
 enum RpcContextMode
@@ -68,7 +69,8 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     uint32_t startUnary(int32_t channelId,
                         const std::string& method,
                         const uint8_t* reqBuffer,
-                        int32_t reqLength);
+                        int32_t reqLength,
+                        int32_t timeoutMs = -1);
 
     bool testResponse(uint32_t requestId);
 
@@ -104,7 +106,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     faabric::util::ConcurrentMap<uint32_t, int32_t> requestToChannel;
 
     mutable std::mutex opsMx;
-    std::condition_variable opsCv;
     std::unordered_map<uint32_t, RpcOp> ops;
 
     std::atomic<RpcContextMode> context{ RUNNING };

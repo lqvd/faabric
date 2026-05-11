@@ -44,7 +44,8 @@ int32_t __faasm_rpc_unary_start(int32_t channelId,
                                 const char* method, 
                                 const uint8_t* reqBuf, 
                                 int32_t reqLen, 
-                                int32_t* outRequestId);
+                                int32_t* outRequestId,
+                                int32_t timeoutMs);
 
 int32_t __faasm_rpc_test_response(int32_t requestId);
 
