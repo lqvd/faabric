@@ -377,6 +377,8 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
         ExecutorContext::set(this, task.req, task.messageIndex);
 
         if (msg.isrpc()) {
+            SPDLOG_INFO("RPC - Registering context for msg {} (isMigration={})",
+                        msg.id(), isMigration);
             auto rpcCtx = std::make_shared<faabric::rpc::RpcContext>(msg.id());
             faabric::rpc::getRpcContextRegistry().registerContext(
                 msg.id(), rpcCtx);
@@ -394,17 +396,38 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
             }
 
             if (isMigration && msg.isrpc() && !task.req->contextdata().empty()) {
+                SPDLOG_INFO("RPC - Restoring migration context for msg {} "
+                            "contextdata size={} funcptr={}",
+                            msg.id(),
+                            task.req->contextdata().size(),
+                            msg.funcptr());
+
                 auto& registry = faabric::rpc::getRpcContextRegistry();
                 auto rpcCtx = registry.getContext(msg.id());
+
+                if (!rpcCtx) {
+                    SPDLOG_ERROR("RPC - No context found for msg {} on restore",
+                                msg.id());
+                    throw std::runtime_error("No RPC context on migration restore");
+                }
 
                 faabric::RpcMigrationState rpcMigCtx;
                 if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
                                               task.req->contextdata().size())) {
+                    SPDLOG_ERROR("RPC - Failed to parse RpcMigrationState for msg {}",
+                                 msg.id());
                     throw std::runtime_error(
                       "Failed to parse RpcMigrationState");
                 }
 
+                SPDLOG_INFO("RPC - Parsed migration state: {} channels, "
+                            "{} pending requests",
+                            rpcMigCtx.channels_size(),
+                            rpcMigCtx.pendingrequests_size());
+
                 rpcCtx->deserializeMigrationState(rpcMigCtx);
+
+                SPDLOG_INFO("RPC - Deserialised migration state for msg {}", msg.id());
             }
             
             returnValue =
