@@ -77,12 +77,6 @@ std::shared_ptr<RpcClientTransport> RpcContext::getOrCreateTransport(
         return existing.value();
     }
 
-    auto transport = std::make_shared<RpcClientTransport>(
-      info.host,
-      RPC_ASYNC_PORT,
-      info.port,
-      5000);
-
     // Keep whichever instance wins the race.
     auto [inserted, stored] =
         targetToTransport.tryEmplaceShared(key, info.host, RPC_ASYNC_PORT,
@@ -101,6 +95,8 @@ int32_t RpcContext::createChannel(const std::string& targetUri)
 
     int32_t id = nextChannelId.fetch_add(1, std::memory_order_relaxed);
     channels.insertOrAssign(id, std::move(info));
+
+    SPDLOG_DEBUG("RPC - Made channel {}", id);
     return id;
 }
 
@@ -155,6 +151,8 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
                 pendingReq->set_cachedresponse(it->second.response.payload());
                 pendingReq->set_cachedstatuscode(it->second.response.statuscode());
             }
+
+            // If there is time remaining, set to time less migration time
             if (it->second.deadline.has_value()) {
                 auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     it->second.deadline.value() - std::chrono::steady_clock::now()).count();
@@ -168,7 +166,8 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
     return migrationCtx;
 }
 
-void RpcContext::deserializeMigrationState(const faabric::RpcMigrationState& migrationCtx)
+void RpcContext::deserializeMigrationState(
+    const faabric::RpcMigrationState& migrationCtx)
 {
     clear();
 
@@ -256,15 +255,18 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 
     try {
         transport->sendRequestAsync(requestId, req);
+        requestToTransport.insertOrAssign(requestId, std::move(transport));
     } catch (...) {
         std::lock_guard<std::mutex> lock(opsMx);
-        ops.erase(requestId);
-        requestToChannel.erase(requestId);
-        requestToTransport.erase(requestId);
-        getRpcContextRegistry().clearRequest(requestId);
-        throw;
+        auto it = ops.find(requestId);
+        // synthesize a response
+        if (it != ops.end()) {
+            it->second.ready = true;
+            it->second.response.set_requestid(requestId);
+            it->second.response.set_statuscode(Rpc_StatusCode::UNAVAILABLE);
+            it->second.response.set_errormessage("failed to send request");
+        }
     }
-    requestToTransport.insertOrAssign(requestId, std::move(transport));
 
     return requestId;
 }
@@ -283,7 +285,6 @@ bool RpcContext::testResponse(uint32_t requestId)
         it->second.response.set_requestid(requestId);
         it->second.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
         it->second.response.set_errormessage("deadline exceeded");
-        return true;
     }
     return it->second.ready;
 }
@@ -293,7 +294,9 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
     std::unique_lock<std::mutex> lock(opsMx);
     auto it = ops.find(requestId);
     if (it == ops.end()) {
-        return false;
+        out.set_statuscode(Rpc_StatusCode::INTERNAL);
+        out.set_errormessage("getResponse called with unknown requestId");
+        return true;
     }
 
     if (!it->second.ready && it->second.deadline.has_value() &&
@@ -305,6 +308,7 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
     }
 
     if (!it->second.ready) {
+        SPDLOG_WARN("RPC - response for {} not ready", requestId);
         return false;
     }
 

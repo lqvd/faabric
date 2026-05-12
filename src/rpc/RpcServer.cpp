@@ -59,13 +59,29 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
+            Rpc_Status status;
             std::vector<uint8_t> output;
-
-            Rpc_Status status = it->second(
-                reinterpret_cast<const uint8_t*>(req.payload().data()),
-                req.payload().size(),
-                output
-            );
+            try {
+                status = it->second(
+                    BYTES_CONST(req.payload().data()),
+                    req.payload().size(),
+                    output
+                );
+            } catch (const std::exception& e) {
+                faabric::RpcResponse resp;
+                resp.set_requestid(req.requestid());
+                resp.set_statuscode(Rpc_StatusCode::INTERNAL);
+                resp.set_errormessage(e.what());
+                sendResponse(req, resp);
+                return;
+            } catch (...) {
+                faabric::RpcResponse resp;
+                resp.set_requestid(req.requestid());
+                resp.set_statuscode(Rpc_StatusCode::INTERNAL);
+                resp.set_errormessage("unknown exception in handler");
+                sendResponse(req, resp);
+                return;
+            }
 
             faabric::RpcResponse resp;
             resp.set_requestid(req.requestid());
@@ -81,7 +97,7 @@ void RpcServer::doAsyncRecv(transport::Message& message)
         case faabric::rpc::RpcMessageType::RESPONSE: {
             faabric::RpcResponse resp;
             if (!resp.ParseFromArray(message.data().data(),
-                                    message.data().size())) {
+                                     message.data().size())) {
                 SPDLOG_ERROR("RPC - Failed to parse RpcResponse");
                 return;
             }
@@ -102,8 +118,8 @@ void RpcServer::doAsyncRecv(transport::Message& message)
             // Has it migrated?
             auto forwardHost = registry.getForwardingAddress(msgIdx);
             if (forwardHost.has_value()) {
-                SPDLOG_INFO("RPC - Proxying response {} for msg {} to migrated host {}",
-                            requestId, msgIdx, forwardHost.value());
+                SPDLOG_INFO("RPC - Proxying response {} for msg {} to migrated "
+                            "host {}", requestId, msgIdx, forwardHost.value());
                 // TODO: maybe pool MessageEndpointClient instances per host
                 // instead of constructing one per forwarded response.
                 std::string buffer;
@@ -117,8 +133,9 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                     forwardHost.value(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
 
                 client.asyncSend(faabric::rpc::RpcMessageType::RESPONSE,
-                                reinterpret_cast<const uint8_t*>(buffer.data()),
-                                buffer.size());
+                                 BYTES_CONST(buffer.c_str()),
+                                 buffer.size(),
+                                 requestId);
 
                 // Hand-off complete — the migrated host owns this request now.
                 registry.clearRequest(requestId);
@@ -150,7 +167,9 @@ void RpcServer::sendResponse(const faabric::RpcRequest& req,
 {
     std::string buffer;
     if (!resp.SerializeToString(&buffer)) {
-        throw std::runtime_error("Failed to serialise RpcResponse");
+        SPDLOG_ERROR("RPC - Failed to serialise response for request {}",
+                     resp.requestid());
+        return; // client will timeout
     }
 
     // TODO: What if the reply host migrates before this?
