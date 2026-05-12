@@ -32,12 +32,6 @@ struct RpcOp
     std::optional<std::chrono::steady_clock::time_point> deadline;
 };
 
-enum RpcContextMode
-{
-    RUNNING = 0,
-    QUIESCE = 1,
-};
-
 class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
@@ -87,18 +81,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     void onResponseReceived(const faabric::RpcResponse& resp);
 
     // ------
-    // Quiescense
-    // ------
-
-    void beginQuiesce();
-
-    void endQuiesce();
-
-    bool tryEnterCall();
-
-    void exitCall();
-
-    // ------
     // Forwarding
     // ------
     void setupForwarding(const std::string& newHost,
@@ -117,11 +99,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     mutable std::mutex opsMx;
     std::unordered_map<uint32_t, RpcOp> ops;
-
-    std::atomic<RpcContextMode> context{ RUNNING };
-    std::atomic<uint32_t> inFlightCalls{ 0 };
-    mutable std::mutex quiesceMx;
-    std::condition_variable quiesceCv;
 
     template <typename Key>
     using ConcurrentMapToTransport =

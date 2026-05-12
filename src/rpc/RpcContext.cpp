@@ -343,46 +343,6 @@ void RpcContext::eraseRequest(uint32_t requestId)
     getRpcContextRegistry().clearRequest(requestId);
 }
 
-void RpcContext::beginQuiesce()
-{
-    context.store(QUIESCE, std::memory_order_release);
-}
-
-void RpcContext::endQuiesce()
-{
-    context.store(RUNNING, std::memory_order_release);
-}
-
-bool RpcContext::tryEnterCall()
-{
-    if (context.load(std::memory_order_acquire) == QUIESCE) {
-        return false;
-    }
-
-    inFlightCalls.fetch_add(1, std::memory_order_acq_rel);
-
-    if (context.load(std::memory_order_acquire) == QUIESCE) {
-#ifndef NDEBUG
-        const auto old = inFlightCalls.fetch_sub(1, std::memory_order_acq_rel);
-        assert(old > 0);
-#else
-        inFlightCalls.fetch_sub(1, std::memory_order_acq_rel);
-#endif
-        return false;
-    }
-
-    return true;
-}
-
-void RpcContext::exitCall()
-{
-    if (inFlightCalls.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (context.load(std::memory_order_acquire) == QUIESCE) {
-            quiesceCv.notify_all();
-        }
-    }
-}
-
 void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
 {
     {

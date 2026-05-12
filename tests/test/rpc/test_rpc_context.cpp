@@ -113,19 +113,5 @@ TEST_CASE_METHOD(RpcTestFixture,
 }
 
 
-TEST_CASE_METHOD(RpcTestFixture,
-                 "RPC quiesce blocks new calls and resumes after endQuiesce",
-                 "[rpc][migration]") {
-    REQUIRE(ctx->tryEnterCall());
-    ctx->exitCall();
-
-    ctx->beginQuiesce();
-    
-    REQUIRE_FALSE(ctx->tryEnterCall());
-    ctx->endQuiesce();
-
-    REQUIRE(ctx->tryEnterCall());
-    ctx->exitCall();
-}
 
 } // namespace tests
