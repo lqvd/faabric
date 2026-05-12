@@ -1,9 +1,9 @@
 faabric_lib(rpc
     rpc.cpp
-    RpcClientTransport.cpp
     RpcContext.cpp
     RpcContextRegistry.cpp
     RpcServer.cpp
+    RpcTransportClient.cpp
 )
 
 target_link_libraries(rpc PRIVATE

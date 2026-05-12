@@ -30,9 +30,6 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     void doAsyncRecv(transport::Message& message) override;
 
   private:
-    void sendResponse(const faabric::RpcRequest& req,
-                      const faabric::RpcResponse& resp);
-
     std::unordered_map<std::string, RpcHandler> routingTable;
 };
 

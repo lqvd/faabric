@@ -3,6 +3,7 @@
 #include <faabric/executor/ExecutorContext.h>
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
 
@@ -68,7 +69,7 @@ std::string RpcContext::makeTargetKey(const ChannelInfo& info)
     return info.host + ":" + std::to_string(info.port);
 }
 
-std::shared_ptr<RpcClientTransport> RpcContext::getOrCreateTransport(
+std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransport(
   const ChannelInfo& info)
 {
     const std::string key = makeTargetKey(info);
@@ -77,15 +78,9 @@ std::shared_ptr<RpcClientTransport> RpcContext::getOrCreateTransport(
         return existing.value();
     }
 
-    // Keep whichever instance wins the race.
     auto [inserted, stored] =
         targetToTransport.tryEmplaceShared(key, info.host, RPC_ASYNC_PORT,
                                            info.port, 5000);
-
-    if (inserted) {
-        return stored;
-    }
-
     return stored;
 }
 
@@ -121,7 +116,6 @@ void RpcContext::clear()
     SPDLOG_TRACE("RPC - Resetting RpcContext");
     channels.clear();
     targetToTransport.clear();
-    requestToTransport.clear();
     nextChannelId.store(1, std::memory_order_relaxed);
 }
 
@@ -190,7 +184,6 @@ void RpcContext::deserializeMigrationState(
 
         ChannelInfo info = getChannel(channelId);
         auto transport = getOrCreateTransport(info);
-        requestToTransport.insertOrAssign(requestId, std::move(transport));
 
         // Restore the op slot... coroutine will find it ready when it resumes
         {
@@ -254,8 +247,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     req.set_requestid(requestId);
 
     try {
-        transport->sendRequestAsync(requestId, req);
-        requestToTransport.insertOrAssign(requestId, std::move(transport));
+        transport->asyncSendRequest(requestId, req);
     } catch (...) {
         std::lock_guard<std::mutex> lock(opsMx);
         auto it = ops.find(requestId);
@@ -316,7 +308,6 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
     ops.erase(it);
     lock.unlock();
 
-    requestToTransport.erase(requestId);
     requestToChannel.erase(requestId);
     getRpcContextRegistry().clearRequest(requestId);
     return true;
@@ -338,7 +329,6 @@ void RpcContext::eraseRequest(uint32_t requestId)
         std::lock_guard<std::mutex> lock(opsMx);
         ops.erase(requestId);
     }
-    requestToTransport.erase(requestId);
     requestToChannel.erase(requestId);
     getRpcContextRegistry().clearRequest(requestId);
 }

@@ -1,6 +1,6 @@
 #pragma once
 #include <faabric/proto/faabric.pb.h>
-#include <faabric/rpc/RpcClientTransport.h>
+#include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/util/concurrent_map.h>
 #include <atomic>
 #include <condition_variable>
@@ -36,6 +36,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
     RpcContext(int32_t ownerMsgIdIn);
+
     ~RpcContext();
 
     // ------
@@ -102,15 +103,14 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     template <typename Key>
     using ConcurrentMapToTransport =
-        faabric::util::ConcurrentMap<Key, std::shared_ptr<RpcClientTransport>>;
+        faabric::util::ConcurrentMap<Key, std::shared_ptr<RpcTransportClient>>;
     ConcurrentMapToTransport<std::string> targetToTransport;
-    ConcurrentMapToTransport<uint32_t> requestToTransport;
 
     static ChannelInfo parseChannelInfo(const std::string& targetUri);
 
     static std::string makeTargetKey(const ChannelInfo& info);
 
-    std::shared_ptr<RpcClientTransport> getOrCreateTransport(const ChannelInfo& info);
+    std::shared_ptr<RpcTransportClient> getOrCreateTransport(const ChannelInfo& info);
 };
 
 } // namespace faabric::rpc
