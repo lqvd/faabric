@@ -71,16 +71,45 @@ void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
     }
 }
 
-void RpcContextRegistry::setForwardingAddress(int32_t msgIdx,
-                                              std::string newHost) 
+void RpcContextRegistry::setForwardingAddress(
+    int32_t msgIdx,
+    std::string newHost,
+    std::unordered_set<uint32_t> pendingRequestIds,
+    std::chrono::milliseconds ttl)
 {
-    forwardingTable.insertOrAssign(msgIdx, std::move(newHost));
+    ForwardingEntry entry{
+        .host = std::move(newHost),
+        .pendingRequestIds = std::move(pendingRequestIds),
+        .expiresAt = std::chrono::steady_clock::now() + ttl,
+    };
+    forwardingTable.insertOrAssign(msgIdx, std::move(entry));
+}
+
+void RpcContextRegistry::markForwarded(int32_t msgIdx, uint32_t requestId) {
+    forwardingTable.mutate(msgIdx, [&](ForwardingEntry& entry) {
+        auto erased = entry.pendingRequestIds.erase(requestId);
+        if (erased == 0) {
+            SPDLOG_WARN("RPC - Forwarded resp {} for msg {} not in pending set",
+                        requestId, msgIdx);
+        }
+        if (entry.pendingRequestIds.empty()) {
+            forwardingTable.erase(msgIdx);
+        }
+    });
 }
 
 std::optional<std::string> RpcContextRegistry::getForwardingAddress(
     int32_t msgIdx)
 {
-    return forwardingTable.get(msgIdx);
+    if (auto entryOpt = forwardingTable.get(msgIdx)) {
+        if (std::chrono::steady_clock::now() > entryOpt->expiresAt) {
+            SPDLOG_DEBUG("RPC - Forwarding entry for msg {} expired", msgIdx);
+            forwardingTable.erase(msgIdx);
+            return {};
+        }
+        return entryOpt->host;
+    }
+    return {};
 }
 
 } // namespace faabric::rpc

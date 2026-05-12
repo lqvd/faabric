@@ -3,10 +3,21 @@
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/util/concurrent_map.h>
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 
 namespace faabric::rpc {
+
+using namespace std::literals::chrono_literals;
+
+static constexpr int32_t kTimeoutTtlMultiplier = 2;
+
+struct ForwardingEntry {
+    std::string host;
+    std::unordered_set<uint32_t> pendingRequestIds;
+    std::chrono::steady_clock::time_point expiresAt;
+};
 
 class RpcContextRegistry
 {
@@ -27,7 +38,13 @@ class RpcContextRegistry
 
     void clearAllRequestsForContext(int32_t msgIdx);
 
-    void setForwardingAddress(int32_t msgIdx, std::string newHost);
+    void setForwardingAddress(
+        int32_t msgIdx,
+        std::string newHost,
+        std::unordered_set<uint32_t> pendingRequestIds,
+        std::chrono::milliseconds ttl = 30s);
+
+    void markForwarded(int32_t msgIdx, uint32_t requestId);
 
     std::optional<std::string> getForwardingAddress(int32_t msgIdx);
 
@@ -40,7 +57,7 @@ class RpcContextRegistry
 
     // If Wasm module migrates to Host B, we proxy the async reply to B via the
     // forwarding table.
-    ConcurrentMap<int32_t, std::string> forwardingTable;
+    ConcurrentMap<int32_t, ForwardingEntry> forwardingTable;
 };
 
 RpcContextRegistry& getRpcContextRegistry();

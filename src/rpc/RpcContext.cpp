@@ -398,4 +398,37 @@ void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
     SPDLOG_INFO("RPC - Received response for {}", resp.requestid());
 }
 
+void RpcContext::setupForwarding(const std::string& newHost,
+                                 std::chrono::milliseconds defaultTtl)
+{
+    std::unordered_set<uint32_t> pendingIds;
+    std::chrono::milliseconds maxRemaining{0};
+    bool anyUnbounded = false;
+    auto now = std::chrono::steady_clock::now();
+
+    {
+        std::lock_guard<std::mutex> lock(opsMx);
+        for (const auto& [reqId, op] : ops) {
+            if (op.ready) continue;
+            pendingIds.insert(reqId);
+            if (!op.deadline.has_value()) {
+                anyUnbounded = true;
+                continue;
+            }
+            auto remaining = 
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    op.deadline.value() - now);
+            maxRemaining = std::max(maxRemaining, remaining);
+        }
+    }
+
+    auto ttl = maxRemaining * kTimeoutTtlMultiplier;
+    if (anyUnbounded) {
+        ttl = std::max(ttl, defaultTtl);
+    }
+
+    getRpcContextRegistry().setForwardingAddress(
+        ownerMsgId, newHost, std::move(pendingIds), ttl);
+}
+
 } // namespace faabric::rpc

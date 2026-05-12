@@ -102,7 +102,8 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                 return;
             }
 
-            SPDLOG_INFO("RPC - Response arrived for requestId={}", resp.requestid());
+            SPDLOG_INFO("RPC - Response arrived for requestId={}",
+                        resp.requestid());
 
             auto& registry = getRpcContextRegistry();
             const uint32_t requestId = resp.requestid();
@@ -138,6 +139,7 @@ void RpcServer::doAsyncRecv(transport::Message& message)
                                  requestId);
 
                 // Hand-off complete — the migrated host owns this request now.
+                registry.markForwarded(msgIdx, requestId);
                 registry.clearRequest(requestId);
                 return;
             }

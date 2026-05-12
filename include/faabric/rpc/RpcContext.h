@@ -14,6 +14,9 @@
 
 namespace faabric::rpc {
 
+using namespace std::chrono_literals;
+static constexpr std::chrono::milliseconds kDefaultForwardingTtl = 30s;
+
 struct ChannelInfo
 {
     std::string targetUri;
@@ -94,6 +97,13 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     bool tryEnterCall();
 
     void exitCall();
+
+    // ------
+    // Forwarding
+    // ------
+    void setupForwarding(const std::string& newHost,
+                         std::chrono::milliseconds defaultTtl
+                            = kDefaultForwardingTtl);
 
   private:
     const int32_t ownerMsgId;
