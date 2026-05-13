@@ -27,6 +27,16 @@ void RpcServer::registerHandler(const std::string& method,
   routingTable[method] = handler;
 }
 
+void RpcServer::RegisterService(std::shared_ptr<Service> service) {
+    for (const auto& method : service->Methods()) {
+        registerHandler(method,
+            [service, method](const uint8_t* req, size_t len,
+                              std::vector<uint8_t>& resp) {
+                return service->HandleCall(method, req, len, resp);
+            });
+    }
+}
+
 std::unique_ptr<google::protobuf::Message> RpcServer::doSyncRecv(
     transport::Message& message)
 {

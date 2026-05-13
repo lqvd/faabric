@@ -23,6 +23,8 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
 
     void registerHandler(const std::string& method, RpcHandler handler);
 
+    void RegisterService(std::shared_ptr<Service> service);
+
   protected:
     std::unique_ptr<google::protobuf::Message> doSyncRecv(
         transport::Message& message) override;
