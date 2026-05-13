@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #ifdef __cplusplus
 extern "C"
@@ -30,6 +31,8 @@ enum Rpc_StatusCode : int
     UNAUTHENTICATED     = 16,
 };
 
+// Abstraction for server to separate handler logic from response generation.
+// The `message` field is used when `code != Rpc_StatusCode::OK`. 
 struct Rpc_Status {
     int code;
     std::string message;
@@ -60,5 +63,28 @@ int32_t __faasm_rpc_get_response(int32_t requestId,
 #ifdef __cplusplus
 }
 #endif
+
+namespace faabric::rpc {
+
+class ServerContext {};
+
+class Service {
+public:
+    virtual ~Service() = default;
+
+    virtual Rpc_Status HandleCall(const std::string& method,
+                                   const uint8_t* reqData, size_t reqLen,
+                                   std::vector<uint8_t>& respData) = 0;
+
+    const std::vector<std::string>& Methods() const { return methods_; }
+
+protected:
+    void AddMethod(const std::string& name) { methods_.push_back(name); }
+
+private:
+    std::vector<std::string> methods_;
+};
+
+} // namespace faabric::rpc
 
 #endif
