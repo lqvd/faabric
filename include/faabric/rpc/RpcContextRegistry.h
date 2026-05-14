@@ -19,6 +19,12 @@ struct ForwardingEntry {
     std::chrono::steady_clock::time_point expiresAt;
 };
 
+struct Destination {
+    enum Kind { LOCAL, REMOTE, UNDELIVERABLE } kind;
+    std::string host;   // valid iff REMOTE
+    int port;           // valid iff REMOTE
+};
+
 class RpcContextRegistry
 {
   public:
@@ -38,6 +44,8 @@ class RpcContextRegistry
 
     void clearAllRequestsForContext(int32_t msgIdx);
 
+    Destination resolveDestination(uint32_t requestId);
+
     void setForwardingAddress(
         int32_t msgIdx,
         std::string newHost,
@@ -49,15 +57,11 @@ class RpcContextRegistry
     std::optional<std::string> getForwardingAddress(int32_t msgIdx);
 
   private:
-    template <typename Key, typename Value>
-    using ConcurrentMap = faabric::util::ConcurrentMap<Key, Value>;
+    std::mutex mx;
 
-    ConcurrentMap<int32_t, std::shared_ptr<RpcContext>> msgIdxToContext;
-    ConcurrentMap<uint32_t, int32_t> requestToMsgIdx;
-
-    // If Wasm module migrates to Host B, we proxy the async reply to B via the
-    // forwarding table.
-    ConcurrentMap<int32_t, ForwardingEntry> forwardingTable;
+    std::unordered_map<int32_t, std::shared_ptr<RpcContext>> msgIdxToContext;
+    std::unordered_map<uint32_t, int32_t> requestToMsgIdx;
+    std::unordered_map<int32_t, ForwardingEntry> forwardingTable;
 };
 
 RpcContextRegistry& getRpcContextRegistry();

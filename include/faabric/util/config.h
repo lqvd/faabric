@@ -49,6 +49,7 @@ class SystemConfig
     int stateServerThreads;
     int snapshotServerThreads;
     int pointToPointServerThreads;
+    int rpcServerThreads;
 
     // Dirty tracking
     std::string dirtyTrackingMode;

@@ -73,6 +73,8 @@ void SystemConfig::initialise()
     // https://github.com/faasm/faabric/issues/335
     pointToPointServerThreads =
       this->getSystemConfIntParam("POINT_TO_POINT_SERVER_THREADS", "8");
+    rpcServerThreads =
+      this->getSystemConfIntParam("RPC_SERVER_THREADS", "2");
 
     // Dirty tracking
     dirtyTrackingMode = getEnvVar("DIRTY_TRACKING_MODE", "segfault");

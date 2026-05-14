@@ -19,7 +19,6 @@
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/redis/Redis.h>
 #include <faabric/rpc/rpc.h>
-#include <faabric/rpc/RpcClientTransport.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcServer.h>
