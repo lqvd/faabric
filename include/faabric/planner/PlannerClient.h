@@ -97,6 +97,11 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
 
     void preloadSchedulingDecision(
       std::shared_ptr<faabric::batch_scheduler::SchedulingDecision> preloadDec);
+    
+    std::future<std::shared_ptr<faabric::Message>> getMessageResultAsync(
+      int appId, int msgId);
+
+    void clearMessageResultPromise(int msgId);
 
   private:
     std::mutex plannerCacheMx;

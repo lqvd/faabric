@@ -268,6 +268,47 @@ faabric::Message PlannerClient::doGetMessageResult(
     }
 }
 
+std::future<std::shared_ptr<faabric::Message>>
+PlannerClient::getMessageResultAsync(int appId, int msgId)
+{
+    auto msgPtr = std::make_shared<faabric::Message>();
+    msgPtr->set_appid(appId);
+    msgPtr->set_id(msgId);
+    msgPtr->set_mainhost(faabric::util::getSystemConfig().endpointHost);
+
+    // See if the planner already has the result. If so, complete the
+    // future immediately and return it — no need to register interest.
+    auto resMsgPtr = getMessageResultFromPlanner(msgPtr);
+    if (resMsgPtr) {
+        std::promise<std::shared_ptr<faabric::Message>> p;
+        p.set_value(resMsgPtr);
+        return p.get_future();
+    }
+
+    // Not ready. Register interest by inserting a promise into the cache;
+    // setMessageResultLocally will fulfil it when the planner notifies us.
+    std::future<std::shared_ptr<faabric::Message>> fut;
+    {
+        faabric::util::UniqueLock lock(plannerCacheMx);
+
+        auto it = cache.plannerResults.find(msgId);
+        if (it == cache.plannerResults.end()) {
+            it = cache.plannerResults
+                   .insert({ msgId, std::make_shared<MessageResultPromise>() })
+                   .first;
+        }
+        fut = it->second->get_future();
+    }
+
+    return fut;
+}
+
+void PlannerClient::clearMessageResultPromise(int msgId)
+{
+    faabric::util::UniqueLock lock(plannerCacheMx);
+    cache.plannerResults.erase(msgId);
+}
+
 // This method is deliberately non-blocking, and returns all results tracked
 // for a particular app
 std::shared_ptr<faabric::BatchExecuteRequestStatus>
