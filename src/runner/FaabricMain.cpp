@@ -96,13 +96,6 @@ void FaabricMain::startRpcServer()
     rpcServer.start();
 }
 
-void FaabricMain::registerRpcHandler(const std::string& name,
-                                     faabric::rpc::RpcHandler handler)
-{
-    rpcServer.registerHandler(name, std::move(handler));
-}
-
-
 void FaabricMain::shutdown()
 {
     SPDLOG_INFO("Removing from global working set");

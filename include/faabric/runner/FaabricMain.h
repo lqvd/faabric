@@ -28,8 +28,6 @@ class FaabricMain
     void startPointToPointServer();
 
     void startRpcServer();
-    void registerRpcHandler(const std::string& name,
-                            faabric::rpc::RpcHandler handler);
 
     void shutdown();
 
