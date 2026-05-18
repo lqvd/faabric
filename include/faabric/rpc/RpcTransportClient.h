@@ -12,6 +12,13 @@
 
 namespace faabric::rpc {
 
+// -----------------------------------
+// Mocking
+// -----------------------------------
+std::vector<faabric::RpcRequest> getMockRpcRequests();
+std::vector<faabric::RpcResponse> getMockRpcResponses();
+void clearMockRpcMessages();
+
 class RpcTransportClient
 {
   public:
@@ -28,7 +35,8 @@ class RpcTransportClient
     int asyncPort;
 
     using AsyncSendEndpointVariant =
-        std::variant<faabric::transport::AsyncSendMessageEndpoint,
+        std::variant<std::monostate,
+                     faabric::transport::AsyncSendMessageEndpoint,
                      faabric::transport::AsyncInternalSendMessageEndpoint>;
     AsyncSendEndpointVariant asyncEndpoint;
 };

@@ -4,29 +4,61 @@
 #include <faabric/rpc/RpcMessageType.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/config.h>
+#include <faabric/util/locks.h>
 #include <faabric/util/logging.h>
+#include <faabric/util/testing.h>
 
 #include <stdexcept>
 
 namespace faabric::rpc {
+
+// -----------------------------------
+// Mocking
+// -----------------------------------
+static std::mutex mockMutex;
+static std::vector<faabric::RpcRequest> mockRpcRequests;
+static std::vector<faabric::RpcResponse> mockRpcResponses;
+
+std::vector<faabric::RpcRequest> getMockRpcRequests()
+{
+    faabric::util::UniqueLock lock(mockMutex);
+    return mockRpcRequests;
+}
+
+std::vector<faabric::RpcResponse> getMockRpcResponses()
+{
+    faabric::util::UniqueLock lock(mockMutex);
+    return mockRpcResponses;
+}
+
+void clearMockRpcMessages()
+{
+    faabric::util::UniqueLock lock(mockMutex);
+    mockRpcRequests.clear();
+    mockRpcResponses.clear();
+}
+
+// -----------------------------------
+// Rpc transport client
+// -----------------------------------
 
 RpcTransportClient::RpcTransportClient(const std::string& hostIn,
                                        int asyncPortIn,
                                        int syncPortIn,
                                        int timeoutMs)
   : asyncPort(asyncPortIn)
-  , asyncEndpoint(
-        hostIn == faabric::util::getSystemConfig().endpointHost
-          ? AsyncSendEndpointVariant(
-                std::in_place_type<faabric::transport::AsyncInternalSendMessageEndpoint>,
-                RPC_INPROC_LABEL,
-                timeoutMs)
-          : AsyncSendEndpointVariant(
-                std::in_place_type<faabric::transport::AsyncSendMessageEndpoint>,
-                hostIn,
-                asyncPortIn,
-                timeoutMs))
-{}
+{
+    namespace Transport = faabric::transport;
+    if (faabric::util::isMockMode()) {
+        asyncEndpoint.emplace<std::monostate>();
+    } else if (hostIn == faabric::util::getSystemConfig().endpointHost) {
+        asyncEndpoint.emplace<Transport::AsyncInternalSendMessageEndpoint>(
+            RPC_INPROC_LABEL, timeoutMs);
+    } else {
+        asyncEndpoint.emplace<Transport::AsyncSendMessageEndpoint>(
+            hostIn, asyncPortIn, timeoutMs);
+    }
+}
 
 void RpcTransportClient::asyncSendRequest(uint32_t requestId,
                                           const faabric::RpcRequest& reqIn)
@@ -42,13 +74,21 @@ void RpcTransportClient::asyncSendRequest(uint32_t requestId,
     }
 
     std::visit(
-        [&](auto& endpoint) {
+    [&](auto& endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+
+        if constexpr (std::is_same_v<Endpoint, std::monostate>) {
+            SPDLOG_TRACE("RPC mock - recording request {}", requestId);
+            faabric::util::UniqueLock lock(mockMutex);
+            mockRpcRequests.push_back(req);
+        } else {
             endpoint.send(faabric::rpc::RpcMessageType::INVOKE,
-                        BYTES_CONST(buffer.c_str()),
-                        buffer.size(),
-                        requestId);
-        },
-        asyncEndpoint);
+                          BYTES_CONST(buffer.c_str()),
+                          buffer.size(),
+                          requestId);
+        }
+    },
+    asyncEndpoint);
 
     SPDLOG_TRACE("RPC - Sent async request {}", requestId);
 }
@@ -57,19 +97,29 @@ void RpcTransportClient::asyncSendResponse(const faabric::RpcResponse& resp)
 {
     std::string buffer;
     if (!resp.SerializeToString(&buffer)) {
-        SPDLOG_ERROR("RPC - Failed to serialise response for response {}",
+        SPDLOG_ERROR("RPC - Failed to serialise response for {}",
                      resp.requestid());
-        return; // client will timeout
+        return;
     }
 
     std::visit(
-        [&](auto& endpoint) {
+    [&](auto& endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+
+        if constexpr (std::is_same_v<Endpoint, std::monostate>) {
+            SPDLOG_TRACE("RPC mock - recording response {}", resp.requestid());
+            faabric::util::UniqueLock lock(mockMutex);
+            mockRpcResponses.push_back(resp);
+        } else {
             endpoint.send(faabric::rpc::RpcMessageType::RESPONSE,
                           BYTES_CONST(buffer.c_str()),
                           buffer.size(),
                           resp.requestid());
-        },
-        asyncEndpoint);
+        }
+    },
+    asyncEndpoint);
+
+    SPDLOG_TRACE("RPC - Sent async response {}", resp.requestid());
 }
 
 } // namespace faabric::rpc
