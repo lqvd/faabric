@@ -2,116 +2,349 @@
 
 #include "fixtures.h"
 
-#include <faabric/proto/faabric.pb.h>
-#include <faabric/rpc/RpcContext.h>
+#include <faabric/rpc/rpc.h>
+#include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/transport/common.h>
-#include <faabric/transport/MessageEndpoint.h>
+
+#include <chrono>
+#include <cstdint>
+#include <string>
+#include <thread>
+#include <vector>
 
 using namespace faabric::rpc;
-using namespace faabric::scheduler;
 
 namespace tests {
 
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context serialize and deserialize",
+class RpcContextTestFixture : public RpcBaseTestFixture
+{
+  public:
+    RpcContextTestFixture()
+    {
+        // Context tests should not require a real server/transport.
+        faabric::util::setMockMode(true);
+    }
+
+    ~RpcContextTestFixture()
+    {
+        faabric::util::setMockMode(false);
+        faabric::rpc::clearMockRpcMessages();
+    }
+
+  protected:
+    static std::string makeFaabricUri(
+      const std::string& host = faabric::util::getSystemConfig().endpointHost,
+      int port = RPC_ASYNC_PORT)
+    {
+        return "faabric://" + host + ":" + std::to_string(port);
+    }
+
+    static uint32_t startUnaryWithPayload(
+      std::shared_ptr<faabric::rpc::RpcContext> ctx,
+      int32_t channelId,
+      const std::string& method = "/demo.echo/Echo",
+      const std::string& payload = "hello",
+      int32_t timeoutMs = -1)
+    {
+        return ctx->startUnary(
+          channelId,
+          method,
+          reinterpret_cast<const uint8_t*>(payload.data()),
+          static_cast<int32_t>(payload.size()),
+          timeoutMs);
+    }
+
+    static faabric::RpcResponse makeResponse(uint32_t requestId,
+                                             int32_t statusCode =
+                                             Rpc_StatusCode::OK,
+                                             const std::string& payload = {})
+    {
+        faabric::RpcResponse resp;
+        resp.set_requestid(requestId);
+        resp.set_statuscode(statusCode);
+        if (!payload.empty()) {
+            resp.set_payload(payload);
+        }
+        return resp;
+    }
+
+    static void checkChannelInfo(const faabric::rpc::ChannelInfo& info,
+                                 const std::string& expectedUri,
+                                 const std::string& expectedHost,
+                                 int expectedPort = RPC_ASYNC_PORT)
+    {
+        REQUIRE(info.targetUri == expectedUri);
+        REQUIRE(info.isFaabric);
+        REQUIRE(info.host == expectedHost);
+        REQUIRE(info.port == expectedPort);
+    }
+
+    static faabric::RpcResponse getReadyResponse(
+      std::shared_ptr<faabric::rpc::RpcContext> ctx,
+      uint32_t requestId)
+    {
+        REQUIRE(ctx->testResponse(requestId));
+
+        faabric::RpcResponse resp;
+        REQUIRE(ctx->getResponse(requestId, resp));
+        return resp;
+    }
+};
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test creating RPC channel with valid faabric URI",
                  "[rpc]")
 {
-    int portA = nextPort();
-    int portB = nextPort();
+    const std::string host = faabric::util::getSystemConfig().endpointHost;
+    const std::string uri = makeFaabricUri(host);
 
-    std::string uriA = makeFaabricUri(portA);
-    std::string uriB = makeFaabricUri(portB);
+    int32_t channelId = ctx->createChannel(uri);
 
-    int32_t idA = ctx->createChannel(uriA);
-    int32_t idB = ctx->createChannel(uriB);
+    REQUIRE(channelId > 0);
 
-    faabric::RpcMigrationState migSt = ctx->serializeMigrationState();
-    
-    REQUIRE(migSt.channels_size() == 2);
+    auto info = ctx->getChannel(channelId);
+    checkChannelInfo(info, uri, host);
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test creating RPC channel with non-faabric URI throws",
+                 "[rpc]")
+{
+    REQUIRE_THROWS(ctx->createChannel("http://example.com:1234"));
+    REQUIRE_THROWS(ctx->createChannel("grpc://example.com:1234"));
+    REQUIRE_THROWS(ctx->createChannel("example.com:1234"));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test starting unary RPC registers pending request",
+                 "[rpc]")
+{
+    auto& reg = faabric::rpc::getRpcContextRegistry();
+
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    REQUIRE(requestId > 0);
+    REQUIRE(ctx->hasPendingRequest(requestId));
+    REQUIRE(!ctx->testResponse(requestId));
+
+    auto actualMsgId = reg.getMsgIdxForRequest(requestId);
+    REQUIRE(actualMsgId.has_value());
+    REQUIRE(actualMsgId.value() == msgId);
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test response is not ready immediately after unary start",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    REQUIRE(!ctx->testResponse(requestId));
+
+    faabric::RpcResponse out;
+    REQUIRE(!ctx->getResponse(requestId, out));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test matching RPC response becomes ready",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    auto resp = makeResponse(requestId, Rpc_StatusCode::OK, "response-data");
+    ctx->onResponseReceived(resp);
+
+    REQUIRE(ctx->testResponse(requestId));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test getting RPC response clears pending operation",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    ctx->onResponseReceived(
+      makeResponse(requestId, Rpc_StatusCode::OK, "response-data"));
+
+    faabric::RpcResponse actual;
+    REQUIRE(ctx->getResponse(requestId, actual));
+
+    REQUIRE(actual.requestid() == requestId);
+    REQUIRE(actual.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(actual.payload() == "response-data");
+
+    REQUIRE(!ctx->hasPendingRequest(requestId));
+    REQUIRE(!ctx->testResponse(requestId));
+
+    faabric::RpcResponse secondRead;
+    REQUIRE(!ctx->getResponse(requestId, secondRead));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test unrelated RPC response does not complete operation",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    uint32_t otherRequestId = requestId + 1000;
+    ctx->onResponseReceived(
+      makeResponse(otherRequestId, Rpc_StatusCode::OK, "wrong-response"));
+
+    REQUIRE(!ctx->testResponse(requestId));
+
+    faabric::RpcResponse actual;
+    REQUIRE(!ctx->getResponse(requestId, actual));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test RPC response timeout synthesizes deadline exceeded",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+
+    uint32_t requestId = startUnaryWithPayload(
+      ctx,
+      channelId,
+      "/demo.echo/Echo",
+      "payload",
+      1);
+
+    REQUIRE(!ctx->testResponse(requestId));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    REQUIRE(ctx->testResponse(requestId));
+
+    faabric::RpcResponse actual;
+    REQUIRE(ctx->getResponse(requestId, actual));
+
+    REQUIRE(actual.requestid() == requestId);
+    REQUIRE(actual.statuscode() == Rpc_StatusCode::DEADLINE_EXCEEDED);
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test closing RPC channel removes it",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+
+    REQUIRE_NOTHROW(ctx->getChannel(channelId));
+
+    ctx->closeChannel(channelId);
+
+    REQUIRE_THROWS(ctx->getChannel(channelId));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test serialising and deserialising RPC migration state",
+                 "[rpc]")
+{
+    const std::string host = faabric::util::getSystemConfig().endpointHost;
+    const std::string uri = makeFaabricUri(host);
+
+    int32_t channelId = ctx->createChannel(uri);
+    uint32_t requestId = startUnaryWithPayload(
+      ctx,
+      channelId,
+      "/demo.echo/Echo",
+      "migration-payload");
+
+    auto migrationState = ctx->serializeMigrationState();
+
+    int32_t newMsgId = faabric::util::generateGid();
+    auto newCtx = makeContext(newMsgId);
+    newCtx->deserializeMigrationState(migrationState);
+
+    auto restoredChannel = newCtx->getChannel(channelId);
+    checkChannelInfo(restoredChannel, uri, host);
+
+    REQUIRE(newCtx->hasPendingRequest(requestId));
+    REQUIRE(!newCtx->testResponse(requestId));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test deserialising RPC migration state with cached response",
+                 "[rpc]")
+{
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(
+      ctx,
+      channelId,
+      "/demo.echo/Echo",
+      "migration-payload");
+
+    ctx->onResponseReceived(
+      makeResponse(requestId, Rpc_StatusCode::OK, "cached-response"));
+
+    auto migrationState = ctx->serializeMigrationState();
+
+    int32_t newMsgId = faabric::util::generateGid();
+    auto newCtx = makeContext(newMsgId);
+    newCtx->deserializeMigrationState(migrationState);
+
+    REQUIRE(newCtx->testResponse(requestId));
+
+    faabric::RpcResponse actual;
+    REQUIRE(newCtx->getResponse(requestId, actual));
+
+    REQUIRE(actual.requestid() == requestId);
+    REQUIRE(actual.statuscode() == Rpc_StatusCode::OK);
+    REQUIRE(actual.payload() == "cached-response");
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test RPC setupForwarding registers forwarding address",
+                 "[rpc]")
+{
+    auto& reg = faabric::rpc::getRpcContextRegistry();
+
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestA = startUnaryWithPayload(
+      ctx,
+      channelId,
+      "/demo.echo/Echo",
+      "payload-a");
+    uint32_t requestB = startUnaryWithPayload(
+      ctx,
+      channelId,
+      "/demo.echo/Echo",
+      "payload-b");
+
+    const std::string newHost = "new-rpc-host";
+
+    ctx->setupForwarding(newHost, std::chrono::milliseconds(30000));
+
+    auto targetA = reg.getResponseTarget(requestA);
+    auto targetB = reg.getResponseTarget(requestB);
+
+    checkRemote(targetA, newHost);
+    checkRemote(targetB, newHost);
+
+    REQUIRE(ctx->hasPendingRequest(requestA));
+    REQUIRE(ctx->hasPendingRequest(requestB));
+}
+
+TEST_CASE_METHOD(RpcContextTestFixture,
+                 "Test clearing RPC context removes channels and pending requests",
+                 "[rpc]")
+{
+    auto& reg = faabric::rpc::getRpcContextRegistry();
+
+    int32_t channelId = ctx->createChannel(makeFaabricUri());
+    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
+
+    REQUIRE(ctx->hasPendingRequest(requestId));
+    REQUIRE(reg.getMsgIdxForRequest(requestId).has_value());
 
     ctx->clear();
 
-    ctx->deserializeMigrationState(migSt);
-
-    auto chA = ctx->getChannel(idA);
-    auto chB = ctx->getChannel(idB);
-
-    REQUIRE(chA.targetUri == uriA);
-    REQUIRE(chB.targetUri == uriB);
-
-    // Ensure next ID advanced after restore
-    int32_t idC = ctx->createChannel(makeFaabricUri(nextPort()));
-    REQUIRE(idC > std::max(idA, idB));
+    REQUIRE(!ctx->hasPendingRequest(requestId));
+    REQUIRE(!reg.getMsgIdxForRequest(requestId).has_value());
+    REQUIRE_THROWS(ctx->getChannel(channelId));
 }
 
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context getChannel throws for unknown id",
-                 "[rpc]")
-{
-    REQUIRE_THROWS_AS(ctx->getChannel(9999), std::runtime_error);
 }
-
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context closeChannel no-op for unknown id",
-                 "[rpc]")
-{
-    // Should not throw
-    REQUIRE_NOTHROW(ctx->closeChannel(9999));
-
-    // Context should still be usable after a no-op close
-    int32_t id = ctx->createChannel(makeFaabricUri(nextPort()));
-    REQUIRE(id == 1);
-}
-
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context clear resets channel ids",
-                 "[rpc]")
-{
-    int32_t idA = ctx->createChannel(makeFaabricUri(nextPort()));
-    int32_t idB = ctx->createChannel(makeFaabricUri(nextPort()));
-
-    REQUIRE(idA == 1);
-    REQUIRE(idB == 2);
-
-    ctx->clear();
-
-    int32_t idC = ctx->createChannel(makeFaabricUri(nextPort()));
-    REQUIRE(idC == 1);
-}
-
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context closes are reflected in serialize",
-                 "[rpc]")
-{
-    int32_t idA = ctx->createChannel(makeFaabricUri(nextPort()));
-    int32_t idB = ctx->createChannel(makeFaabricUri(nextPort()));
-
-    ctx->closeChannel(idA);
-    auto migSt = ctx->serializeMigrationState();
-    
-    REQUIRE(migSt.channels_size() == 1);
-    REQUIRE(migSt.channels(0).channelid() == idB);
-}
-
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context parse default faabric port URI",
-                 "[rpc]")
-{
-    int32_t id = ctx->createChannel("faabric://127.0.0.1");
-    auto ch = ctx->getChannel(id);
-
-    REQUIRE(ch.targetUri == "faabric://127.0.0.1");
-    REQUIRE(ch.port == RPC_ASYNC_PORT);
-}
-
-TEST_CASE_METHOD(RpcTestFixture,
-                 "Test RPC context rejects invalid faabric port",
-                 "[rpc]")
-{
-    REQUIRE_THROWS_AS(ctx->createChannel("faabric://127.0.0.1:notaport"),
-                      std::invalid_argument);
-}
-
-
-
-} // namespace tests

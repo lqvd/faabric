@@ -1,6 +1,7 @@
 #include <faabric/rpc/RpcContextRegistry.h>
 
 #include <faabric/transport/common.h>
+#include <faabric/util/locks.h>
 #include <faabric/util/logging.h>
 
 #include <cstdint>
@@ -16,39 +17,62 @@ RpcContextRegistry& getRpcContextRegistry()
     return reg;
 }
 
+// -----------------------------------
+// context handling
+// -----------------------------------
+
 void RpcContextRegistry::registerContext(int32_t msgIdx,
                                          std::shared_ptr<RpcContext> ctx)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::SharedLock lock(mx);
     msgIdxToContext[msgIdx] = std::move(ctx);
     SPDLOG_TRACE("RPC - Registered Context ID {}", msgIdx);
 }
 
 std::shared_ptr<RpcContext> RpcContextRegistry::getContext(int32_t msgId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::SharedLock lock(mx);
     auto it = msgIdxToContext.find(msgId);
     return it == msgIdxToContext.end() ? nullptr : it->second;
 }
 
 void RpcContextRegistry::removeContext(int32_t msgIdx)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     msgIdxToContext.erase(msgIdx);
     SPDLOG_TRACE("RPC - Removed context for msg {}", msgIdx);
 }
 
+void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
+{
+    faabric::util::FullLock lock(mx);
+
+    for (auto it = requestToMsgIdx.begin(); it != requestToMsgIdx.end();) {
+        if (it->second == msgIdx) {
+            it = requestToMsgIdx.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    forwardingTable.erase(msgIdx);
+}
+
+// -----------------------------------
+// request ID mappings
+// -----------------------------------
+
 void RpcContextRegistry::registerInFlightRequest(uint32_t requestId,
                                                  int32_t msgIdx)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     requestToMsgIdx[requestId] = msgIdx;
 }
 
 std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
   uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::SharedLock lock(mx);
     auto reqIt = requestToMsgIdx.find(requestId);
     if (reqIt == requestToMsgIdx.end()) {
         return nullptr;
@@ -60,7 +84,7 @@ std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
 std::optional<int32_t> RpcContextRegistry::getMsgIdxForRequest(
   uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::SharedLock lock(mx);
     auto it = requestToMsgIdx.find(requestId);
     if (it == requestToMsgIdx.end()) {
         return std::nullopt;
@@ -70,35 +94,27 @@ std::optional<int32_t> RpcContextRegistry::getMsgIdxForRequest(
 
 void RpcContextRegistry::clearRequest(uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     requestToMsgIdx.erase(requestId);
 }
 
-void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
-{
-    std::lock_guard<std::mutex> lock(mx);
-    for (auto it = requestToMsgIdx.begin(); it != requestToMsgIdx.end();) {
-        if (it->second == msgIdx) {
-            it = requestToMsgIdx.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
+// -----------------------------------
+// response routing
+// -----------------------------------
 
-Destination RpcContextRegistry::resolveDestination(uint32_t requestId)
+ResponseTarget RpcContextRegistry::getResponseTarget(uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
 
     auto reqIt = requestToMsgIdx.find(requestId);
     if (reqIt == requestToMsgIdx.end()) {
-        return Destination{ Destination::UNDELIVERABLE, "", 0 };
+        return ResponseTarget{ ResponseTarget::UNDELIVERABLE, "", 0 };
     }
     int32_t msgIdx = reqIt->second;
 
     // Live local context wins.
     if (msgIdxToContext.find(msgIdx) != msgIdxToContext.end()) {
-        return Destination{ Destination::LOCAL, "", 0 };
+        return ResponseTarget{ ResponseTarget::LOCAL, "", 0 };
     }
 
     // Migrated — forward if we have a non-expired address.
@@ -108,13 +124,13 @@ Destination RpcContextRegistry::resolveDestination(uint32_t requestId)
             SPDLOG_DEBUG("RPC - Forwarding entry for msg {} expired", msgIdx);
             forwardingTable.erase(fwdIt);
         } else {
-            return Destination{ Destination::REMOTE,
+            return ResponseTarget{ ResponseTarget::REMOTE,
                                 fwdIt->second.host,
                                 RPC_ASYNC_PORT };
         }
     }
 
-    return Destination{ Destination::UNDELIVERABLE, "", 0 };
+    return ResponseTarget{ ResponseTarget::UNDELIVERABLE, "", 0 };
 }
 
 void RpcContextRegistry::setForwardingAddress(
@@ -123,7 +139,7 @@ void RpcContextRegistry::setForwardingAddress(
     std::unordered_set<uint32_t> pendingRequestIds,
     std::chrono::milliseconds ttl)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     ForwardingEntry entry{
         .host = std::move(newHost),
         .pendingRequestIds = std::move(pendingRequestIds),
@@ -134,7 +150,7 @@ void RpcContextRegistry::setForwardingAddress(
 
 void RpcContextRegistry::markForwarded(int32_t msgIdx, uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     auto it = forwardingTable.find(msgIdx);
     if (it == forwardingTable.end()) {
         SPDLOG_WARN("RPC - markForwarded for msg {} with no forwarding entry",
@@ -154,7 +170,7 @@ void RpcContextRegistry::markForwarded(int32_t msgIdx, uint32_t requestId)
 std::optional<std::string> RpcContextRegistry::getForwardingAddress(
     int32_t msgIdx)
 {
-    std::lock_guard<std::mutex> lock(mx);
+    faabric::util::FullLock lock(mx);
     auto it = forwardingTable.find(msgIdx);
     if (it == forwardingTable.end()) {
         return std::nullopt;
@@ -165,6 +181,14 @@ std::optional<std::string> RpcContextRegistry::getForwardingAddress(
         return std::nullopt;
     }
     return it->second.host;
+}
+
+void RpcContextRegistry::reset()
+{
+    faabric::util::FullLock lock(mx);
+    msgIdxToContext.clear();
+    requestToMsgIdx.clear();
+    forwardingTable.clear();
 }
 
 } // namespace faabric::rpc

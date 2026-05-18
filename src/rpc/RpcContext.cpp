@@ -6,6 +6,7 @@
 #include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
+#include <faabric/util/locks.h>
 
 #include <algorithm>
 #include <cassert>
@@ -21,6 +22,10 @@ static constexpr int32_t kNoCachedRespStatus = -1;
 static constexpr std::string_view kFaabricScheme = "faabric://";
 
 std::atomic<uint32_t> RpcContext::nextRequestId{1};
+
+// -----------------------------------
+// helpers
+// -----------------------------------
 
 static bool isFaabricUri(const std::string& uri)
 {
@@ -40,15 +45,8 @@ static std::pair<std::string, int> parseFaabricUri(const std::string& uri)
     return { host, port };
 }
 
-RpcContext::RpcContext(int32_t ownerMsgIdIn)
-  : ownerMsgId(ownerMsgIdIn) {}
 
-RpcContext::~RpcContext()
-{
-    getRpcContextRegistry().clearAllRequestsForContext(ownerMsgId);
-}
-
-ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
+ChannelInfo parseChannelInfo(const std::string& targetUri)
 {
     if (!isFaabricUri(targetUri)) {
         throw std::runtime_error(
@@ -64,32 +62,49 @@ ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
     };
 }
 
+// -----------------------------------
+// rpc context state
+// -----------------------------------
+
+RpcContext::RpcContext(int32_t ownerMsgIdIn)
+  : ownerMsgId(ownerMsgIdIn) {}
+
 std::string RpcContext::makeTargetKey(const ChannelInfo& info)
 {
     return info.host + ":" + std::to_string(info.port);
 }
 
-std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransport(
+// Lock should be held.
+std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
   const ChannelInfo& info)
 {
     const std::string key = makeTargetKey(info);
 
-    if (auto existing = targetToTransport.get(key)) {
-        return existing.value();
+    auto it = targetToTransport.find(key);
+    if (it != targetToTransport.end()) {
+        return it->second;
     }
 
-    auto [inserted, stored] =
-        targetToTransport.tryEmplaceShared(key, info.host, RPC_ASYNC_PORT,
-                                           info.port, 5000);
-    return stored;
+    auto transport = std::make_shared<RpcTransportClient>(
+      info.host,
+      RPC_ASYNC_PORT,
+      info.port,
+      5000);
+
+    targetToTransport.emplace(key, transport);
+    return transport;
 }
 
 int32_t RpcContext::createChannel(const std::string& targetUri)
 {
     ChannelInfo info = parseChannelInfo(targetUri);
 
-    int32_t id = nextChannelId.fetch_add(1, std::memory_order_relaxed);
-    channels.insertOrAssign(id, std::move(info));
+    const int32_t id = nextChannelId.fetch_add(1, std::memory_order_relaxed);
+
+    {
+        faabric::util::ScopedLock lock(mx);
+        channels.emplace(id, std::move(info));
+    }
 
     SPDLOG_DEBUG("RPC - Made channel {}", id);
     return id;
@@ -97,8 +112,11 @@ int32_t RpcContext::createChannel(const std::string& targetUri)
 
 ChannelInfo RpcContext::getChannel(int32_t channelId)
 {
-    if (auto opt = channels.get(channelId)) {
-        return opt.value();
+    faabric::util::ScopedLock lock(mx);
+
+    auto it = channels.find(channelId);
+    if (it != channels.end()) {
+        return it->second;
     }
 
     SPDLOG_ERROR("RPC - Wasm guest requested unknown channel ID {}", channelId);
@@ -107,6 +125,7 @@ ChannelInfo RpcContext::getChannel(int32_t channelId)
 
 void RpcContext::closeChannel(int32_t channelId)
 {
+    faabric::util::ScopedLock lock(mx);
     channels.erase(channelId);
     SPDLOG_TRACE("RPC - Closed channel ID {}", channelId);
 }
@@ -114,80 +133,114 @@ void RpcContext::closeChannel(int32_t channelId)
 void RpcContext::clear()
 {
     SPDLOG_TRACE("RPC - Resetting RpcContext");
-    channels.clear();
-    targetToTransport.clear();
+
+    {
+        faabric::util::ScopedLock lock(mx);
+        channels.clear();
+        requestToChannel.clear();
+        targetToTransport.clear();
+        ops.clear();
+    }
+
     nextChannelId.store(1, std::memory_order_relaxed);
+
+    auto& reg = getRpcContextRegistry();
+    reg.clearAllRequestsForContext(ownerMsgId);
+    reg.removeContext(ownerMsgId);
 }
+
+// -----------------------------------
+// serialisation + deserialisation
+// -----------------------------------
 
 faabric::RpcMigrationState RpcContext::serializeMigrationState() const
 {
     faabric::RpcMigrationState migrationCtx;
 
-    // Serialize Channels
-    channels.inspectAll([&migrationCtx](const int32_t& id,
-                                        const ChannelInfo& info) {
-        auto* channelState = migrationCtx.add_channels();
-        channelState->set_channelid(id);
-        channelState->set_targeturi(info.targetUri);
-    });
+    faabric::util::ScopedLock lock(mx);
 
-    // Serialize In-Flight Requests
-    std::lock_guard<std::mutex> lock(opsMx);
-    requestToChannel.inspectAll([&](const uint32_t& reqId, const int32_t& chId) {
+    for (const auto& [channelId, info] : channels) {
+        auto* channelState = migrationCtx.add_channels();
+        channelState->set_channelid(channelId);
+        channelState->set_targeturi(info.targetUri);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    for (const auto& [reqId, channelId] : requestToChannel) {
         auto* pendingReq = migrationCtx.add_pendingrequests();
         pendingReq->set_requestid(reqId);
-        pendingReq->set_channelid(chId);
+        pendingReq->set_channelid(channelId);
         pendingReq->set_cachedstatuscode(kNoCachedRespStatus);
 
-        auto it = ops.find(reqId);
-        if (it != ops.end()) {
-            if (it->second.ready) {
-                pendingReq->set_cachedresponse(it->second.response.payload());
-                pendingReq->set_cachedstatuscode(it->second.response.statuscode());
-            }
-
-            // If there is time remaining, set to time less migration time
-            if (it->second.deadline.has_value()) {
-                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    it->second.deadline.value() - std::chrono::steady_clock::now()).count();
-                pendingReq->set_timeoutremaining(std::max(0L, remaining));
-            } else {
-                pendingReq->set_timeoutremaining(-1);
-            }
+        auto opIt = ops.find(reqId);
+        if (opIt == ops.end()) {
+            pendingReq->set_timeoutremaining(-1);
+            continue;
         }
-    });
+
+        const auto& op = opIt->second;
+
+        if (op.ready) {
+            pendingReq->set_cachedresponse(op.response.payload());
+            pendingReq->set_cachedstatuscode(op.response.statuscode());
+        }
+
+        if (op.deadline.has_value()) {
+            auto remaining =
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                op.deadline.value() - now)
+                .count();
+
+            pendingReq->set_timeoutremaining(std::max<int64_t>(0, remaining));
+        } else {
+            pendingReq->set_timeoutremaining(-1);
+        }
+    }
 
     return migrationCtx;
 }
 
 void RpcContext::deserializeMigrationState(
-    const faabric::RpcMigrationState& migrationCtx)
+  const faabric::RpcMigrationState& migrationCtx)
 {
     clear();
 
-    int32_t highestChannelId = 0;
-    for (const auto& channelState : migrationCtx.channels()) {
-        ChannelInfo info = parseChannelInfo(channelState.targeturi());
-        channels.insertOrAssign(channelState.channelid(), std::move(info));
-        highestChannelId = std::max(highestChannelId, channelState.channelid());
-    }
-    nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
+    {
+        faabric::util::ScopedLock lock(mx);
 
-    SPDLOG_INFO("RPC - Deserialising {} pending requests",
-                migrationCtx.pendingrequests_size());
+        int32_t highestChannelId = 0;
 
-    for (const auto& pendingReq : migrationCtx.pendingrequests()) {
-        uint32_t requestId = pendingReq.requestid();
-        int32_t channelId = pendingReq.channelid();
+        for (const auto& channelState : migrationCtx.channels()) {
+            ChannelInfo info = parseChannelInfo(channelState.targeturi());
 
-        requestToChannel.insertOrAssign(requestId, std::move(channelId));
+            const int32_t channelId = channelState.channelid();
+            channels.emplace(channelId, std::move(info));
 
-        ChannelInfo info = getChannel(channelId);
-        auto transport = getOrCreateTransport(info);
+            highestChannelId = std::max(highestChannelId, channelId);
+        }
 
-        // Restore the op slot... coroutine will find it ready when it resumes
-        {
-            std::lock_guard<std::mutex> lock(opsMx);
+        nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
+
+        SPDLOG_INFO("RPC - Deserialising {} pending requests",
+                    migrationCtx.pendingrequests_size());
+
+        for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+            const uint32_t requestId = pendingReq.requestid();
+            const int32_t channelId = pendingReq.channelid();
+
+            auto chIt = channels.find(channelId);
+            if (chIt == channels.end()) {
+                throw std::runtime_error(
+                  fmt::format("RPC migration state references unknown channel {}",
+                              channelId));
+            }
+
+            requestToChannel.emplace(requestId, channelId);
+
+            // Recreate cached transport entry.
+            getOrCreateTransportLocked(chIt->second);
+
             RpcOp op;
             if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
                 op.ready = true;
@@ -195,51 +248,72 @@ void RpcContext::deserializeMigrationState(
                 op.response.set_statuscode(pendingReq.cachedstatuscode());
                 op.response.set_payload(pendingReq.cachedresponse());
             }
+
             if (pendingReq.timeoutremaining() >= 0) {
-                op.deadline = std::chrono::steady_clock::now() +
-                            std::chrono::milliseconds(pendingReq.timeoutremaining());
+                op.deadline =
+                  std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(pendingReq.timeoutremaining());
             }
-            // If no cached response, op.ready = false and coroutine will block
-            // normally and onResponseReceived will wake it when it arrives
+
             ops.emplace(requestId, std::move(op));
         }
-
-        getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
     }
 
-    getRpcContextRegistry().registerContext(ownerMsgId, shared_from_this());
+    auto& reg = getRpcContextRegistry();
+
+    for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+        reg.registerInFlightRequest(pendingReq.requestid(), ownerMsgId);
+    }
+
+    reg.registerContext(ownerMsgId, shared_from_this());
 }
 
+// -----------------------------------
+// rpc unary request
+// -----------------------------------
+
+// Start an unary request and register into context.
 uint32_t RpcContext::startUnary(int32_t channelId,
                                 const std::string& method,
                                 const uint8_t* reqBuffer,
                                 int32_t reqLength,
                                 int32_t timeoutMs)
 {
-    ChannelInfo info = getChannel(channelId);
-    if (!info.isFaabric) {
-        throw std::runtime_error("External RPC is not implemented");
-    }
+    std::shared_ptr<RpcTransportClient> transport;
+    uint32_t requestId = 0;
 
-    auto transport = getOrCreateTransport(info);
-
-    const uint32_t requestId =
-        nextRequestId.fetch_add(1, std::memory_order_relaxed);
-
-    // Register the op in RpcContext before sending, so onResponseReceived
-    // can never arrive before the slot exists
     {
-        std::lock_guard<std::mutex> lock(opsMx);
+        faabric::util::ScopedLock lock(mx);
+
+        auto chIt = channels.find(channelId);
+        if (chIt == channels.end()) {
+            SPDLOG_ERROR("RPC - Wasm guest requested unknown channel ID {}",
+                         channelId);
+            throw std::runtime_error(
+              "Unknown RPC channel ID requested by Wasm guest");
+        }
+
+        const ChannelInfo& info = chIt->second;
+        if (!info.isFaabric) {
+            throw std::runtime_error("External RPC is not implemented");
+        }
+
+        transport = getOrCreateTransportLocked(info);
+
+        requestId = nextRequestId.fetch_add(1, std::memory_order_relaxed);
+
         RpcOp op;
         if (timeoutMs >= 0) {
-            op.deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeoutMs);
+            op.deadline =
+              std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(timeoutMs);
         }
+
         ops.emplace(requestId, std::move(op));
+        requestToChannel.emplace(requestId, channelId);
     }
 
     getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
-    requestToChannel.insertOrAssign(requestId, std::move(channelId));
 
     faabric::RpcRequest req;
     req.set_method(method);
@@ -249,9 +323,9 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     try {
         transport->asyncSendRequest(requestId, req);
     } catch (...) {
-        std::lock_guard<std::mutex> lock(opsMx);
+        faabric::util::ScopedLock lock(mx);
+
         auto it = ops.find(requestId);
-        // synthesize a response
         if (it != ops.end()) {
             it->second.ready = true;
             it->second.response.set_requestid(requestId);
@@ -263,111 +337,132 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     return requestId;
 }
 
-bool RpcContext::testResponse(uint32_t requestId)
-{
-    std::lock_guard<std::mutex> lock(opsMx);
-    auto it = ops.find(requestId);
-    if (it == ops.end()) {
-        return false;
-    }
-    if (!it->second.ready && it->second.deadline.has_value() &&
-        std::chrono::steady_clock::now() >= it->second.deadline.value()) {
-        // Synthesize a DEADLINE_EXCEEDED response.
-        it->second.ready = true;
-        it->second.response.set_requestid(requestId);
-        it->second.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
-        it->second.response.set_errormessage("deadline exceeded");
-    }
-    return it->second.ready;
-}
-
-bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
-{
-    std::unique_lock<std::mutex> lock(opsMx);
-    auto it = ops.find(requestId);
-    if (it == ops.end()) {
-        out.set_statuscode(Rpc_StatusCode::INTERNAL);
-        out.set_errormessage("getResponse called with unknown requestId");
-        return true;
-    }
-
-    if (!it->second.ready && it->second.deadline.has_value() &&
-        std::chrono::steady_clock::now() >= it->second.deadline.value()) {
-        it->second.ready = true;
-        it->second.response.set_requestid(requestId);
-        it->second.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
-        it->second.response.set_errormessage("deadline exceeded");
-    }
-
-    if (!it->second.ready) {
-        SPDLOG_WARN("RPC - response for {} not ready", requestId);
-        return false;
-    }
-
-    out = std::move(it->second.response);
-    ops.erase(it);
-    lock.unlock();
-
-    requestToChannel.erase(requestId);
-    getRpcContextRegistry().clearRequest(requestId);
-    return true;
-}
-
 bool RpcContext::hasPendingRequest(uint32_t requestId)
 {
-    std::lock_guard<std::mutex> lock(opsMx);
+    faabric::util::ScopedLock lock(mx);
+
     auto it = ops.find(requestId);
     if (it == ops.end()) {
         return false;
     }
+
     return !it->second.ready;
 }
 
 void RpcContext::eraseRequest(uint32_t requestId)
 {
     {
-        std::lock_guard<std::mutex> lock(opsMx);
+        faabric::util::ScopedLock lock(mx);
         ops.erase(requestId);
+        requestToChannel.erase(requestId);
     }
-    requestToChannel.erase(requestId);
+
     getRpcContextRegistry().clearRequest(requestId);
+}
+
+// -----------------------------------
+// rpc response
+// -----------------------------------
+
+static void synthesizeDeadlineExceededIfNeeded(uint32_t requestId, RpcOp& op)
+{
+    if (op.ready) return;
+    if (!op.deadline.has_value()) return;
+    if (std::chrono::steady_clock::now() < op.deadline.value()) return;
+
+    op.ready = true;
+    op.response.set_requestid(requestId);
+    op.response.set_statuscode(Rpc_StatusCode::DEADLINE_EXCEEDED);
+    op.response.set_errormessage("deadline exceeded");
+}
+
+bool RpcContext::testResponse(uint32_t requestId)
+{
+    faabric::util::ScopedLock lock(mx);
+
+    auto it = ops.find(requestId);
+    if (it == ops.end()) {
+        return false;
+    }
+
+    synthesizeDeadlineExceededIfNeeded(requestId, it->second);
+
+    return it->second.ready;
+}
+
+bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
+{
+    {
+        faabric::util::ScopedLock lock(mx);
+
+        auto it = ops.find(requestId);
+        if (it == ops.end()) {
+            out.Clear();
+            return false;
+        }
+
+        synthesizeDeadlineExceededIfNeeded(requestId, it->second);
+
+        if (!it->second.ready) {
+            SPDLOG_WARN("RPC - response for {} not ready", requestId);
+            return false;
+        }
+
+        out = std::move(it->second.response);
+
+        ops.erase(it);
+        requestToChannel.erase(requestId);
+    }
+
+    getRpcContextRegistry().clearRequest(requestId);
+    return true;
 }
 
 void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
 {
-    {
-        std::lock_guard<std::mutex> lock(opsMx);
-        auto it = ops.find(resp.requestid());
-        if (it == ops.end()) {
-            SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
-            return;
-        }
-        it->second.response = resp;
-        it->second.ready = true;
+    faabric::util::ScopedLock lock(mx);
+
+    auto it = ops.find(resp.requestid());
+    if (it == ops.end()) {
+        SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
+        return;
     }
+
+    it->second.response = resp;
+    it->second.ready = true;
+
     SPDLOG_INFO("RPC - Received response for {}", resp.requestid());
 }
+
+// -----------------------------------
+// forwarding
+// -----------------------------------
 
 void RpcContext::setupForwarding(const std::string& newHost,
                                  std::chrono::milliseconds defaultTtl)
 {
+    namespace chrono = std::chrono;
     std::unordered_set<uint32_t> pendingIds;
-    std::chrono::milliseconds maxRemaining{0};
+    chrono::milliseconds maxRemaining{ 0 };
     bool anyUnbounded = false;
-    auto now = std::chrono::steady_clock::now();
 
     {
-        std::lock_guard<std::mutex> lock(opsMx);
+        faabric::util::ScopedLock lock(mx);
+
+        const auto now = chrono::steady_clock::now();
+
         for (const auto& [reqId, op] : ops) {
             if (op.ready) continue;
+
             pendingIds.insert(reqId);
             if (!op.deadline.has_value()) {
                 anyUnbounded = true;
                 continue;
             }
-            auto remaining = 
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    op.deadline.value() - now);
+
+            auto remaining = chrono::duration_cast<chrono::milliseconds>(
+                op.deadline.value() - now);
+
             maxRemaining = std::max(maxRemaining, remaining);
         }
     }
@@ -377,8 +472,17 @@ void RpcContext::setupForwarding(const std::string& newHost,
         ttl = std::max(ttl, defaultTtl);
     }
 
-    getRpcContextRegistry().setForwardingAddress(
-        ownerMsgId, newHost, std::move(pendingIds), ttl);
+    auto& reg = getRpcContextRegistry();
+
+    if (!pendingIds.empty()) {
+        reg.setForwardingAddress(
+          ownerMsgId,
+          newHost,
+          std::move(pendingIds),
+          ttl);
+    }
+
+    reg.removeContext(ownerMsgId);
 }
 
 } // namespace faabric::rpc

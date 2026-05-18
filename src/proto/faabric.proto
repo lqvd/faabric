@@ -154,7 +154,9 @@ message Message {
     // RPC
     bool isRpc = 41 [json_name = "rpc"];
     string rpcService = 42;
-    int32 rpcReplyId = 43;
+    uint32 rpcRequestId = 43;
+    string rpcReplyHost = 44;
+    int32 rpcReplyPort = 45;
 }
 
 // ---------------------------------------------

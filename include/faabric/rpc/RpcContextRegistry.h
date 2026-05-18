@@ -19,7 +19,7 @@ struct ForwardingEntry {
     std::chrono::steady_clock::time_point expiresAt;
 };
 
-struct Destination {
+struct ResponseTarget {
     enum Kind { LOCAL, REMOTE, UNDELIVERABLE } kind;
     std::string host;   // valid iff REMOTE
     int port;           // valid iff REMOTE
@@ -35,16 +35,17 @@ class RpcContextRegistry
     std::shared_ptr<RpcContext> getContext(int32_t msgIdx);
 
     void removeContext(int32_t msgIdx);
-
+    
     std::shared_ptr<RpcContext> getContextForRequest(uint32_t requestId);
+    
+    void clearAllRequestsForContext(int32_t msgIdx);
 
     std::optional<int32_t> getMsgIdxForRequest(uint32_t requestId);
 
     void clearRequest(uint32_t requestId);
 
-    void clearAllRequestsForContext(int32_t msgIdx);
 
-    Destination resolveDestination(uint32_t requestId);
+    ResponseTarget getResponseTarget(uint32_t requestId);
 
     void setForwardingAddress(
         int32_t msgIdx,
@@ -56,8 +57,10 @@ class RpcContextRegistry
 
     std::optional<std::string> getForwardingAddress(int32_t msgIdx);
 
+    void reset();
+
   private:
-    std::mutex mx;
+    std::shared_mutex mx;
 
     std::unordered_map<int32_t, std::shared_ptr<RpcContext>> msgIdxToContext;
     std::unordered_map<uint32_t, int32_t> requestToMsgIdx;

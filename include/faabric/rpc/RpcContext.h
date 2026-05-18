@@ -1,7 +1,8 @@
 #pragma once
+
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcTransportClient.h>
-#include <faabric/util/concurrent_map.h>
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -37,7 +38,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
   public:
     RpcContext(int32_t ownerMsgIdIn);
 
-    ~RpcContext();
+    ~RpcContext() = default;
 
     // ------
     // Channel handling
@@ -89,28 +90,23 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
                             = kDefaultForwardingTtl);
 
   private:
-    const int32_t ownerMsgId;
-
     static std::atomic<uint32_t> nextRequestId;
-
     std::atomic<int32_t> nextChannelId{ 1 };
 
-    faabric::util::ConcurrentMap<int32_t, ChannelInfo> channels;
-    faabric::util::ConcurrentMap<uint32_t, int32_t> requestToChannel;
+    const int32_t ownerMsgId;
 
-    mutable std::mutex opsMx;
+    mutable std::mutex mx;
+
+    std::unordered_map<int32_t, ChannelInfo> channels;
+    std::unordered_map<uint32_t, int32_t> requestToChannel;
     std::unordered_map<uint32_t, RpcOp> ops;
-
-    template <typename Key>
-    using ConcurrentMapToTransport =
-        faabric::util::ConcurrentMap<Key, std::shared_ptr<RpcTransportClient>>;
-    ConcurrentMapToTransport<std::string> targetToTransport;
-
-    static ChannelInfo parseChannelInfo(const std::string& targetUri);
+    std::unordered_map<std::string, std::shared_ptr<RpcTransportClient>>
+      targetToTransport;
 
     static std::string makeTargetKey(const ChannelInfo& info);
 
-    std::shared_ptr<RpcTransportClient> getOrCreateTransport(const ChannelInfo& info);
+    std::shared_ptr<RpcTransportClient> getOrCreateTransportLocked(
+      const ChannelInfo& info);
 };
 
 } // namespace faabric::rpc

@@ -28,6 +28,7 @@
 #include <faabric/snapshot/SnapshotRegistry.h>
 #include <faabric/state/InMemoryStateKeyValue.h>
 #include <faabric/state/State.h>
+#include <faabric/transport/common.h>
 #include <faabric/transport/PointToPointBroker.h>
 #include <faabric/transport/PointToPointClient.h>
 #include <faabric/transport/PointToPointServer.h>
@@ -553,166 +554,333 @@ class RemoteMpiTestFixture : public MpiBaseTestFixture
     faabric::mpi::MpiWorld otherWorld;
 };
 
-class RpcTestFixture : public ConfFixture
+class RpcContextRegistryFixture
 {
   public:
-    RpcTestFixture()
+    ~RpcContextRegistryFixture()
     {
-        conf.endpointHost = "127.0.0.1";
-        conf.overrideCpuCount = 1;
-
-        // Allocate a synthetic msgId for this test's RpcContext.
-        // Using a high range to avoid colliding with anything a real
-        // executor might assign.
-        msgId = nextTestMsgId();
-
-        ctx = std::make_shared<faabric::rpc::RpcContext>(msgId);
-        faabric::rpc::getRpcContextRegistry().registerContext(msgId, ctx);
-    }
-
-    ~RpcTestFixture()
-    {
-        ctx->clear();
-        faabric::rpc::getRpcContextRegistry().removeContext(msgId);
+        faabric::rpc::getRpcContextRegistry().reset();
     }
 
   protected:
-    std::shared_ptr<faabric::rpc::RpcContext> ctx;
-    int32_t msgId{ 0 };
-
-    static int32_t nextTestMsgId()
+    static uint32_t nextRequestId()
     {
-        // Start high to avoid colliding with any real executor msg IDs
-        // that other parts of the test process might be using.
-        static std::atomic<int32_t> id{ 1000000 };
+        static std::atomic<uint32_t> id{ 1 };
         return id.fetch_add(1, std::memory_order_relaxed);
     }
 
-    int nextPort()
+    static std::shared_ptr<faabric::rpc::RpcContext> makeContext(int32_t msgId)
     {
-        static std::atomic<int> p{ 19000 };
-        return p.fetch_add(1, std::memory_order_relaxed);
+        return std::make_shared<faabric::rpc::RpcContext>(msgId);
     }
 
-    std::string makeFaabricUri(int port) const
+    static void checkLocal(faabric::rpc::RpcContextRegistry& reg,
+                           const faabric::rpc::ResponseTarget& dest,
+                           const uint32_t reqId,
+                           int32_t expectedMsgId)
     {
-        return "faabric://127.0.0.1:" + std::to_string(port);
+        REQUIRE(dest.kind == faabric::rpc::ResponseTarget::LOCAL);
+        auto msgId = reg.getMsgIdxForRequest(reqId);
+        REQUIRE(msgId.has_value());
+        REQUIRE(msgId.value() == expectedMsgId);
     }
 
-    faabric::RpcResponse pollResult(uint32_t requestId)
+    static void checkRemote(const faabric::rpc::ResponseTarget& dest,
+                            const std::string& expectedHost,
+                            int expectedPort = RPC_ASYNC_PORT)
     {
-        while (!ctx->testResponse(requestId))
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-        faabric::RpcResponse resp;
-        if (!ctx->getResponse(requestId, resp))
-            resp.set_statuscode(Rpc_StatusCode::INTERNAL);
-        return resp;
+        REQUIRE(dest.kind == faabric::rpc::ResponseTarget::REMOTE);
+        REQUIRE(dest.host == expectedHost);
+        REQUIRE(dest.port == expectedPort);
     }
 
-    bool pollResultTimed(uint32_t requestId,
-                         faabric::RpcResponse& resp,
-                         int timeoutMs = 3000)
+    static void checkUndeliverable(const faabric::rpc::ResponseTarget& dest)
+    {
+        REQUIRE(dest.kind == faabric::rpc::ResponseTarget::UNDELIVERABLE);
+    }
+};
+
+class RpcBaseTestFixture
+  : public RpcContextRegistryFixture
+  , public SchedulerFixture
+{
+  public:
+    RpcBaseTestFixture()
+      : appId(faabric::util::generateGid())
+      , msgId(faabric::util::generateGid())
+      , ctx(std::make_shared<faabric::rpc::RpcContext>(msgId))
+    {
+        // Use the dummy executor factory so no real WASM is needed.
+        // Individual tests can call setExecutorFactory to override.
+        auto fac =
+          std::make_shared<faabric::executor::DummyExecutorFactory>();
+        faabric::executor::setExecutorFactory(fac);
+
+        // Give the scheduler enough slots to run at least one RPC function.
+        faabric::HostResources res;
+        res.set_slots(4);
+        sch.setThisHostResources(res);
+
+        // Register the client context so deliverResponse can find it.
+        faabric::rpc::getRpcContextRegistry().registerContext(msgId, ctx);
+    }
+
+    ~RpcBaseTestFixture()
+    {
+        ctx->clear();
+        // Registry fully reset in ~RpcContextRegistryFixture.
+    }
+
+  protected:
+    int appId;
+    int32_t msgId;
+    std::shared_ptr<faabric::rpc::RpcContext> ctx;
+
+    // Proto factories
+
+    /**
+     * Build an RpcRequest with sensible defaults for any field not supplied.
+     */
+    static faabric::RpcRequest makeRpcRequest(
+      uint32_t requestId,
+      const std::string& method,
+      const std::string& payload = {},
+      const std::string& replyHost =
+        faabric::util::getSystemConfig().endpointHost,
+      int replyPort = RPC_ASYNC_PORT)
+    {
+        faabric::RpcRequest req;
+        req.set_requestid(requestId);
+        req.set_method(method);
+        req.set_payload(payload);
+        req.set_replyhost(replyHost);
+        req.set_replyport(replyPort);
+        return req;
+    }
+
+    // Batch validation
+
+    static void checkRpcBatch(
+      std::shared_ptr<faabric::BatchExecuteRequest> actual,
+      const std::string& expectedUser,
+      const std::string& expectedFunction,
+      uint32_t expectedRequestId,
+      const std::string& expectedPayload = {})
+    {
+        REQUIRE(actual != nullptr);
+        REQUIRE(actual->type() == faabric::BatchExecuteRequest::RPC);
+        REQUIRE(actual->messages_size() == 1);
+
+        const auto& msg = actual->messages(0);
+        REQUIRE(msg.user() == expectedUser);
+        REQUIRE(msg.function() == expectedFunction);
+        REQUIRE(msg.isrpc());
+        REQUIRE(static_cast<uint32_t>(msg.rpcrequestid()) == expectedRequestId);
+        if (!expectedPayload.empty()) {
+            REQUIRE(msg.inputdata() == expectedPayload);
+        }
+    }
+
+    // Registry helpers
+
+    /**
+     * Set up the "context has migrated to another host" state that the
+     * forwarding path needs
+     */
+    void setupMigratedContext(uint32_t requestId,
+                              int32_t msgIdx,
+                              const std::string& forwardHost,
+                              std::chrono::seconds ttl = std::chrono::seconds(10))
+    {
+        auto& reg = faabric::rpc::getRpcContextRegistry();
+        reg.registerInFlightRequest(requestId, msgIdx);
+        reg.setForwardingAddress(
+          msgIdx, forwardHost, { requestId },
+          std::chrono::duration_cast<std::chrono::milliseconds>(ttl));
+    }
+
+    // Response polling
+
+    faabric::RpcResponse pollResult(uint32_t requestId,
+                                    int timeoutMs = 3000)
     {
         const auto deadline =
           std::chrono::steady_clock::now() +
           std::chrono::milliseconds(timeoutMs);
 
         while (!ctx->testResponse(requestId)) {
-            if (std::chrono::steady_clock::now() >= deadline)
-                return false;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                FAIL("Timed out waiting for RPC response for requestId="
+                     + std::to_string(requestId));
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
-        if (!ctx->getResponse(requestId, resp))
+        faabric::RpcResponse resp;
+        if (!ctx->getResponse(requestId, resp)) {
             resp.set_statuscode(Rpc_StatusCode::INTERNAL);
-        return true;
+            resp.set_errormessage("getResponse returned false after testResponse was true");
+        }
+        return resp;
     }
 
-    faabric::RpcResponse doCall(int32_t channelId,
-                                const std::string& method,
-                                const std::string& payload = {})
+    // Planner result waiting
+
+    // Wait for a dispatched WASM function to complete and return its
+    // Message. Used by server fixtures to block until the executor is done.
+    faabric::Message waitForFunctionResult(int appId,
+                                           int msgId,
+                                           int timeoutMs = 5000)
     {
-        uint32_t requestId = ctx->startUnary(
-          channelId,
-          method,
-          reinterpret_cast<const uint8_t*>(payload.data()),
-          static_cast<int32_t>(payload.size()));
-        return pollResult(requestId);
+        return plannerCli.getMessageResult(appId, msgId, timeoutMs);
     }
-
-    std::jthread startClientCall(const std::string& targetUri,
-                                 const std::string& method,
-                                 const std::string& payload,
-                                 faabric::RpcResponse& result)
-    {
-        return std::jthread([&, targetUri, method, payload] {
-            try {
-                int32_t channelId = ctx->createChannel(targetUri);
-                uint32_t requestId = ctx->startUnary(
-                  channelId,
-                  method,
-                  reinterpret_cast<const uint8_t*>(payload.data()),
-                  static_cast<int32_t>(payload.size()));
-
-                while (!ctx->testResponse(requestId))
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-                if (!ctx->getResponse(requestId, result))
-                    result.set_statuscode(Rpc_StatusCode::INTERNAL);
-
-                ctx->closeChannel(channelId);
-            } catch (const std::exception& ex) {
-                result.set_statuscode(Rpc_StatusCode::INTERNAL);
-                result.set_errormessage(ex.what());
-            }
-        });
-    }
-
-    // void sendProtoResponse(faabric::transport::SyncRecvMessageEndpoint& server,
-    //                        int32_t statusCode,
-    //                        const std::string& payload)
-    // {
-    //     faabric::RpcResponse resp;
-    //     resp.set_statuscode(statusCode);
-    //     if (!payload.empty())
-    //         resp.set_payload(payload);
-
-    //     std::string buf;
-    //     resp.SerializeToString(&buf);
-    //     server.sendResponse(0,
-    //                         reinterpret_cast<const uint8_t*>(buf.data()),
-    //                         buf.size());
-    // }
-
-    // void sendRawResponse(faabric::transport::SyncRecvMessageEndpoint& server,
-    //                      const std::string& raw)
-    // {
-    //     server.sendResponse(0,
-    //                         reinterpret_cast<const uint8_t*>(raw.data()),
-    //                         raw.size());
-    // }
 };
 
-class RpcServerFixture : public RpcTestFixture
+
+class RpcEchoExecutor : public faabric::executor::Executor
 {
   public:
-    RpcServerFixture() { server.start(); }
+    explicit RpcEchoExecutor(faabric::Message& msg)
+      : faabric::executor::Executor(msg)
+    {}
+
+    int32_t executeTask(
+      int threadPoolIdx,
+      int msgIdx,
+      std::shared_ptr<faabric::BatchExecuteRequest> req) override
+    {
+        auto& msg = req->mutable_messages()->at(msgIdx);
+        // Echo input → output so the caller gets something back.
+        msg.set_outputdata(msg.inputdata());
+        return 0;
+    }
+};
+
+class RpcEchoExecutorFactory : public faabric::executor::ExecutorFactory
+{
+  public:
+    std::shared_ptr<faabric::executor::Executor> createExecutor(
+      faabric::Message& msg) override
+    {
+        return std::make_shared<RpcEchoExecutor>(msg);
+    }
+};
+
+class RpcServerFixture : public RpcBaseTestFixture
+{
+  public:
+    RpcServerFixture()
+    {
+        // Override with the echo executor so dispatch tests can see
+        // a real result come back through the reactor.
+        faabric::executor::setExecutorFactory(
+          std::make_shared<RpcEchoExecutorFactory>());
+
+        server.start();
+    }
+
     ~RpcServerFixture() { server.stop(); }
 
   protected:
     faabric::rpc::RpcServer server;
 
-    void registerHandler(const std::string& method,
-                         faabric::rpc::RpcHandler handler)
+    // Inject a response directly into the server's outbound queue,
+    // bypassing dispatch entirely. Useful for testing deliverResponse
+    // and getResponseTarget in isolation.
+    void injectResponse(uint32_t requestId,
+                        const std::string& payload = {},
+                        int32_t status = Rpc_StatusCode::OK)
     {
-        server.registerHandler(method, std::move(handler));
+        faabric::RpcResponse resp;
+        resp.set_requestid(requestId);
+        resp.set_statuscode(status);
+        if (!payload.empty()) {
+            resp.set_payload(payload);
+        }
+        server.deliverResponse(resp);
     }
 
-    int32_t localChannel()
+    /**
+     * Send a real INVOKE over the wire to the server's async port.
+     * Used for transport-level tests that need a genuine network round-trip.
+     */
+    void sendRpcInvoke(const faabric::RpcRequest& req)
     {
-        return ctx->createChannel("faabric://localhost");
+        faabric::rpc::RpcTransportClient client(
+            faabric::util::getSystemConfig().endpointHost,
+            RPC_ASYNC_PORT,
+            RPC_SYNC_PORT,
+            5000);
+        client.asyncSendRequest(req.requestid(), req);
     }
+};
+
+class RemoteRpcTestFixture : public RpcBaseTestFixture
+{
+  public:
+    RemoteRpcTestFixture()
+      : thisHost(faabric::util::getSystemConfig().endpointHost)
+    {
+        faabric::util::setMockMode(true);
+    }
+
+    ~RemoteRpcTestFixture()
+    {
+        faabric::util::setMockMode(false);
+        faabric::rpc::clearMockRpcMessages();
+    }
+
+    // Configure slot counts for both hosts. Call this from each test
+    // that needs a specific distribution of capacity — mirrors
+    // RemoteMpiTestFixture::setWorldSizes.
+    void setHostConfig(int slotsThisHost, int slotsOtherHost)
+    {
+        faabric::HostResources thisRes;
+        thisRes.set_slots(slotsThisHost);
+        sch.setThisHostResources(thisRes);
+
+        faabric::HostResources otherRes;
+        otherRes.set_slots(slotsOtherHost);
+        sch.addHostToGlobalSet(
+          otherHost,
+          std::make_shared<faabric::HostResources>(otherRes));
+    }
+
+    // Set up a "request migrated to otherHost" scenario in one call.
+    // After this, getResponseTarget(requestId) returns
+    // REMOTE{otherHost, RPC_ASYNC_PORT}.
+    void setupRemoteForward(uint32_t requestId, int32_t fakeExecutorMsgId)
+    {
+        auto& reg = faabric::rpc::getRpcContextRegistry();
+        reg.registerInFlightRequest(requestId, fakeExecutorMsgId);
+
+        // Remove the local context so the local path is not taken.
+        reg.removeContext(fakeExecutorMsgId);
+
+        reg.setForwardingAddress(
+          fakeExecutorMsgId,
+          otherHost,
+          { requestId },
+          std::chrono::milliseconds(30000));
+    }
+
+    static void checkForwardedResponse(uint32_t requestId,
+                                   const std::string& expectedPayload = {})
+    {
+        auto sent = faabric::rpc::getMockRpcResponses();
+        auto it = std::find_if(sent.begin(), sent.end(),
+            [requestId](const faabric::RpcResponse& r) {
+                return r.requestid() == requestId;
+            });
+        REQUIRE(it != sent.end());
+        if (!expectedPayload.empty()) {
+            REQUIRE(it->payload() == expectedPayload);
+        }
+    }
+
+  protected:
+    std::string thisHost;
+    std::string otherHost = LOCALHOST;
 };
 
 class BatchSchedulerFixture : public ConfFixture
