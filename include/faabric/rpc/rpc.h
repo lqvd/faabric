@@ -31,14 +31,6 @@ enum Rpc_StatusCode : int
     UNAUTHENTICATED     = 16,
 };
 
-// Abstraction for server to separate handler logic from response generation.
-// The `message` field is used when `code != Rpc_StatusCode::OK`. 
-struct Rpc_Status {
-    int code;
-    std::string message;
-    bool ok() const { return code == 0; }
-};
-
 int Rpc_ChannelCreate(const char* targetUri, int32_t* outChannelId);
 
 int Rpc_ChannelClose(int32_t channelId);
@@ -60,30 +52,25 @@ int32_t __faasm_rpc_get_response(int32_t requestId,
                                  int32_t* outRespOffset, 
                                  int32_t* outRespLen);
 
-#ifdef __cplusplus
-}
-#endif
+int32_t __faasm_rpc_send_response(uint32_t requestId,
+                                  const char* replyHost,
+                                  int32_t replyPort,
+                                  int32_t statusCode,
+                                  const uint8_t* payload,
+                                  int32_t payloadLen,
+                                  const char* errorMessage,
+                                  int32_t errorMessageLen);
 
-namespace faabric::rpc {
-
-class ServerContext {};
-
-class Service {
-public:
-    virtual ~Service() = default;
-
-    virtual Rpc_Status HandleCall(const std::string& method,
-                                   const uint8_t* reqData, size_t reqLen,
-                                   std::vector<uint8_t>& respData) = 0;
-
-    const std::vector<std::string>& Methods() const { return methods_; }
-
-protected:
-    void AddMethod(const std::string& name) { methods_.push_back(name); }
-
-private:
-    std::vector<std::string> methods_;
-};
+int32_t __faasm_rpc_get_request(int32_t wasmResumeTarget,
+                                int32_t frameOffset,
+                                uint32_t* outRequestIdPtr,
+                                int32_t* outMethodOffsetPtr,
+                                int32_t* outMethodLenPtr,
+                                int32_t* outPayloadOffsetPtr,
+                                int32_t* outPayloadLenPtr,
+                                int32_t* outReplyHostOffsetPtr,
+                                int32_t* outReplyHostLenPtr,
+                                int32_t* outReplyPortPtr);
 
 } // namespace faabric::rpc
 
