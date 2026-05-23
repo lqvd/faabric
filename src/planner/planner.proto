@@ -151,3 +151,26 @@ message AvailableHostsResponse {
 message SetEvictedVmIpsRequest {
     repeated string vmIps = 1;
 }
+
+// ---------------------------------------------
+// Service Discovery Management
+// ---------------------------------------------
+
+message ServiceEndpoint {
+    string serviceName = 1;
+    string host = 2;
+    int32 appId = 3;
+    int32 groupId = 4;
+    int32 messageId = 5;
+    int32 groupIdx = 6;
+}
+
+message DiscoverServiceRequest {
+    string serviceName = 1;
+    string callerHost = 2;
+}
+
+message DiscoverServiceResponse {
+    bool found = 1;
+    ServiceEndpoint endpoint = 2;
+}

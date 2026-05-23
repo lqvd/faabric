@@ -36,6 +36,5 @@ class FaabricMain
     faabric::scheduler::FunctionCallServer functionServer;
     faabric::snapshot::SnapshotServer snapshotServer;
     faabric::transport::PointToPointServer pointToPointServer;
-    faabric::rpc::RpcServer rpcServer;
 };
 }

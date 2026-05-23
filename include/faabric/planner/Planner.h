@@ -104,6 +104,13 @@ class Planner
 
     void setNextEvictedVm(const std::set<std::string>& vmIp);
 
+    // ----------
+    // API for RPC management
+    // ----------
+    std::optional<ServiceEndpoint> discoverService(
+      const std::string& serviceName,
+      const std::string& callerHost = "");
+
   private:
     // There's a singleton instance of the planner running, but it must allow
     // concurrent requests

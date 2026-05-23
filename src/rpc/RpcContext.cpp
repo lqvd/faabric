@@ -32,19 +32,14 @@ static bool isFaabricUri(const std::string& uri)
     return uri.rfind(kFaabricScheme, 0) == 0;
 }
 
-static std::pair<std::string, int> parseFaabricUri(const std::string& uri)
+static int parseRpcPort(const std::string& uri)
 {
     std::string rest = uri.substr(kFaabricScheme.size());
     auto colon = rest.rfind(':');
-    if (colon == std::string::npos) {
-        return { rest, RPC_ASYNC_PORT };
-    }
-
-    std::string host = rest.substr(0, colon);
-    int port = std::stoi(rest.substr(colon + 1));
-    return { host, port };
+    return colon == std::string::npos
+             ? RPC_ASYNC_PORT
+             : std::stoi(rest.substr(colon + 1));
 }
-
 
 ChannelInfo parseChannelInfo(const std::string& targetUri)
 {
@@ -53,12 +48,10 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
             fmt::format("External RPC URIs are not implemented: {}", targetUri));
     }
 
-    auto [host, port] = parseFaabricUri(targetUri);
     return ChannelInfo{
         .targetUri = targetUri,
         .isFaabric = true,
-        .host = host,
-        .port = port,
+        .port = parseRpcPort(targetUri),
     };
 }
 
@@ -69,16 +62,14 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
 RpcContext::RpcContext(int32_t ownerMsgIdIn)
   : ownerMsgId(ownerMsgIdIn) {}
 
-std::string RpcContext::makeTargetKey(const ChannelInfo& info)
-{
-    return info.host + ":" + std::to_string(info.port);
-}
-
 // Lock should be held.
 std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
   const ChannelInfo& info)
 {
-    const std::string key = makeTargetKey(info);
+    // All faabric RPCs go through the local RpcServer... host is always local.
+    // Port comes from the URI, identifies which RpcServer port to target.
+    const std::string host = faabric::util::getSystemConfig().endpointHost;
+    const std::string key = host + ":" + std::to_string(info.port);
 
     auto it = targetToTransport.find(key);
     if (it != targetToTransport.end()) {
@@ -86,10 +77,7 @@ std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
     }
 
     auto transport = std::make_shared<RpcTransportClient>(
-      info.host,
-      RPC_ASYNC_PORT,
-      info.port,
-      5000);
+        host, RPC_ASYNC_PORT, info.port, 5000);
 
     targetToTransport.emplace(key, transport);
     return transport;
@@ -130,23 +118,14 @@ void RpcContext::closeChannel(int32_t channelId)
     SPDLOG_TRACE("RPC - Closed channel ID {}", channelId);
 }
 
-void RpcContext::clear()
+void RpcContext::clearLocal()
 {
-    SPDLOG_TRACE("RPC - Resetting RpcContext");
-
-    {
-        faabric::util::ScopedLock lock(mx);
-        channels.clear();
-        requestToChannel.clear();
-        targetToTransport.clear();
-        ops.clear();
-    }
-
+    faabric::util::ScopedLock lock(mx);
+    channels.clear();
+    requestToChannel.clear();
+    targetToTransport.clear();
+    ops.clear();
     nextChannelId.store(1, std::memory_order_relaxed);
-
-    auto& reg = getRpcContextRegistry();
-    reg.clearAllRequestsForContext(ownerMsgId);
-    reg.removeContext(ownerMsgId);
 }
 
 // -----------------------------------
@@ -198,13 +177,15 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
         }
     }
 
+    migrationCtx.set_originhost(faabric::util::getSystemConfig().endpointHost);
+
     return migrationCtx;
 }
 
 void RpcContext::deserializeMigrationState(
   const faabric::RpcMigrationState& migrationCtx)
 {
-    clear();
+    clearLocal();
 
     {
         faabric::util::ScopedLock lock(mx);
@@ -232,13 +213,11 @@ void RpcContext::deserializeMigrationState(
             auto chIt = channels.find(channelId);
             if (chIt == channels.end()) {
                 throw std::runtime_error(
-                  fmt::format("RPC migration state references unknown channel {}",
-                              channelId));
+                fmt::format("RPC migration state references unknown channel {}",
+                            channelId));
             }
 
             requestToChannel.emplace(requestId, channelId);
-
-            // Recreate cached transport entry.
             getOrCreateTransportLocked(chIt->second);
 
             RpcOp op;
@@ -248,13 +227,11 @@ void RpcContext::deserializeMigrationState(
                 op.response.set_statuscode(pendingReq.cachedstatuscode());
                 op.response.set_payload(pendingReq.cachedresponse());
             }
-
             if (pendingReq.timeoutremaining() >= 0) {
-                op.deadline =
+                op.deadline = 
                   std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(pendingReq.timeoutremaining());
+                    std::chrono::milliseconds(pendingReq.timeoutremaining());
             }
-
             ops.emplace(requestId, std::move(op));
         }
     }
@@ -266,6 +243,30 @@ void RpcContext::deserializeMigrationState(
     }
 
     reg.registerContext(ownerMsgId, shared_from_this());
+
+    for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+        if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
+            // already restored as ready
+            continue;
+        }
+
+        faabric::RpcFetchRequest fetch;
+        fetch.set_requestid(pendingReq.requestid());
+        fetch.set_replyhost(faabric::util::getSystemConfig().endpointHost);
+        fetch.set_replyport(RPC_ASYNC_PORT);
+
+        try {
+            RpcTransportClient client(
+                migrationCtx.originhost(),
+                RPC_ASYNC_PORT,
+                RPC_SYNC_PORT,
+                5000);
+            client.asyncSendFetch(fetch);
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("RPC - Failed to send FETCH for requestId={}: {}",
+                        pendingReq.requestid(), e.what());
+        }
+    }
 }
 
 // -----------------------------------
@@ -475,6 +476,7 @@ void RpcContext::setupForwarding(const std::string& newHost,
     auto& reg = getRpcContextRegistry();
 
     if (!pendingIds.empty()) {
+        SPDLOG_INFO("PENDING ID SET!");
         reg.setForwardingAddress(
           ownerMsgId,
           newHost,

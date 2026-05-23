@@ -6,6 +6,7 @@
 #include <faabric/proto/faabric.pb.h>
 
 #include <map>
+#include <shared_mutex>
 
 namespace faabric::planner {
 /* This helper struct encapsulates the internal state of the planner
@@ -54,5 +55,12 @@ struct PlannerState
     // This variable simulates the values we would get from a cloud provider's
     // API indicating the (set of) VM to be evicted next
     std::set<std::string> nextEvictedHostIps;
+
+    // -----
+    // Data structures used for service management
+    // -----
+    std::map<std::string, std::string> serviceToHost;
+    std::shared_mutex serviceMx;
+    std::map<std::string, size_t> serviceRrCounter;
 };
 }

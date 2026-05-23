@@ -70,6 +70,9 @@ std::unique_ptr<google::protobuf::Message> PlannerServer::doSyncRecv(
         case PlannerCalls::CallBatch: {
             return recvCallBatch(message.udata());
         }
+        case PlannerCalls::DiscoverService: {
+            return recvDiscoverService(message.udata());
+        }
         default: {
             // If we don't recognise the header, let the client fail, but don't
             // crash the planner
@@ -245,5 +248,26 @@ std::unique_ptr<google::protobuf::Message> PlannerServer::recvCallBatch(
     }
 
     return std::make_unique<faabric::PointToPointMappings>(mappings);
+}
+
+std::unique_ptr<google::protobuf::Message> PlannerServer::recvDiscoverService(
+  std::span<const uint8_t> buffer)
+{
+    PARSE_MSG(DiscoverServiceRequest, buffer.data(), buffer.size());
+
+    auto endpoint = planner.discoverService(
+      parsedMsg.servicename(),
+      parsedMsg.callerhost());
+
+    auto resp = std::make_unique<DiscoverServiceResponse>();
+
+    if (endpoint.has_value()) {
+        resp->set_found(true);
+        *resp->mutable_endpoint() = endpoint.value();
+    } else {
+        resp->set_found(false);
+    }
+
+    return resp;
 }
 }

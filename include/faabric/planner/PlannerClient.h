@@ -103,6 +103,13 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
 
     void clearMessageResultPromise(int msgId);
 
+    // ------
+    // Service management
+    // ------
+
+    std::optional<ServiceEndpoint> resolveServiceEndpoint(
+        const std::string& serviceName);
+
   private:
     std::mutex plannerCacheMx;
     PlannerCache cache;
@@ -118,6 +125,8 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
     // sends a request to the planner server)
     std::shared_ptr<faabric::Message> getMessageResultFromPlanner(
       std::shared_ptr<faabric::Message> msg);
+
+    std::mutex discoveryMx;
 };
 
 // -----------------------------------

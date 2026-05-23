@@ -22,7 +22,6 @@ struct ChannelInfo
 {
     std::string targetUri;
     bool isFaabric;
-    std::string host;
     int port;
 };
 
@@ -49,8 +48,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     ChannelInfo getChannel(int32_t channelId);
 
     void closeChannel(int32_t channelId);
-
-    void clear();
 
     // ------
     // Migration serialisation and deserialisation
@@ -103,7 +100,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     std::unordered_map<std::string, std::shared_ptr<RpcTransportClient>>
       targetToTransport;
 
-    static std::string makeTargetKey(const ChannelInfo& info);
+    void clearLocal();
 
     std::shared_ptr<RpcTransportClient> getOrCreateTransportLocked(
       const ChannelInfo& info);

@@ -19,10 +19,9 @@ struct ForwardingEntry {
     std::chrono::steady_clock::time_point expiresAt;
 };
 
-struct ResponseTarget {
-    enum Kind { LOCAL, REMOTE, UNDELIVERABLE } kind;
-    std::string host;   // valid iff REMOTE
-    int port;           // valid iff REMOTE
+struct PendingFetch {
+    std::string host;
+    int port;
 };
 
 class RpcContextRegistry
@@ -44,9 +43,6 @@ class RpcContextRegistry
 
     void clearRequest(uint32_t requestId);
 
-
-    ResponseTarget getResponseTarget(uint32_t requestId);
-
     void setForwardingAddress(
         int32_t msgIdx,
         std::string newHost,
@@ -56,6 +52,19 @@ class RpcContextRegistry
     void markForwarded(int32_t msgIdx, uint32_t requestId);
 
     std::optional<std::string> getForwardingAddress(int32_t msgIdx);
+    
+    // Cache response for migrated host to then fetch
+    void cacheForwardedResponse(uint32_t requestId,
+                                const faabric::RpcResponse& resp);
+
+    std::optional<faabric::RpcResponse> consumeForwardedResponse(
+        uint32_t requestId);
+
+    void registerPendingFetch(uint32_t requestId,
+                              const std::string& host,
+                              int port);
+
+    std::optional<PendingFetch> consumePendingFetch(uint32_t requestId);
 
     void reset();
 
@@ -65,6 +74,8 @@ class RpcContextRegistry
     std::unordered_map<int32_t, std::shared_ptr<RpcContext>> msgIdxToContext;
     std::unordered_map<uint32_t, int32_t> requestToMsgIdx;
     std::unordered_map<int32_t, ForwardingEntry> forwardingTable;
+    std::unordered_map<uint32_t, faabric::RpcResponse> forwardedResponseCache;
+    std::unordered_map<uint32_t, PendingFetch> pendingFetches;
 };
 
 RpcContextRegistry& getRpcContextRegistry();

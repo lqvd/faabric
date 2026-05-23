@@ -51,9 +51,6 @@ RpcTransportClient::RpcTransportClient(const std::string& hostIn,
     namespace Transport = faabric::transport;
     if (faabric::util::isMockMode()) {
         asyncEndpoint.emplace<std::monostate>();
-    } else if (hostIn == faabric::util::getSystemConfig().endpointHost) {
-        asyncEndpoint.emplace<Transport::AsyncInternalSendMessageEndpoint>(
-            RPC_INPROC_LABEL, timeoutMs);
     } else {
         asyncEndpoint.emplace<Transport::AsyncSendMessageEndpoint>(
             hostIn, asyncPortIn, timeoutMs);
@@ -120,6 +117,32 @@ void RpcTransportClient::asyncSendResponse(const faabric::RpcResponse& resp)
     asyncEndpoint);
 
     SPDLOG_TRACE("RPC - Sent async response {}", resp.requestid());
+}
+
+void RpcTransportClient::asyncSendFetch(const faabric::RpcFetchRequest& fetch)
+{
+    std::string buffer;
+    if (!fetch.SerializeToString(&buffer)) {
+        SPDLOG_ERROR("RPC - Failed to serialise fetch for {}",
+                     fetch.requestid());
+        return;
+    }
+
+    std::visit(
+    [&](auto& endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+        if constexpr (std::is_same_v<Endpoint, std::monostate>) {
+            SPDLOG_TRACE("RPC mock - dropping fetch {}", fetch.requestid());
+        } else {
+            endpoint.send(faabric::rpc::RpcMessageType::FETCH,
+                          BYTES_CONST(buffer.c_str()),
+                          buffer.size(),
+                          fetch.requestid());
+        }
+    },
+    asyncEndpoint);
+
+    SPDLOG_TRACE("RPC - Sent fetch for requestId={}", fetch.requestid());
 }
 
 } // namespace faabric::rpc

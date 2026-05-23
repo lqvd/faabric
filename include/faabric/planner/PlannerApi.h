@@ -18,5 +18,7 @@ enum PlannerCalls
     GetNumMigrations = 12,
     CallBatch = 13,
     PreloadSchedulingDecision = 14,
+    // Service discovery calls
+    DiscoverService = 15,
 };
 }

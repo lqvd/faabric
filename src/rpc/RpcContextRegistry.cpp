@@ -54,8 +54,6 @@ void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
             ++it;
         }
     }
-
-    forwardingTable.erase(msgIdx);
 }
 
 // -----------------------------------
@@ -102,37 +100,6 @@ void RpcContextRegistry::clearRequest(uint32_t requestId)
 // response routing
 // -----------------------------------
 
-ResponseTarget RpcContextRegistry::getResponseTarget(uint32_t requestId)
-{
-    faabric::util::FullLock lock(mx);
-
-    auto reqIt = requestToMsgIdx.find(requestId);
-    if (reqIt == requestToMsgIdx.end()) {
-        return ResponseTarget{ ResponseTarget::UNDELIVERABLE, "", 0 };
-    }
-    int32_t msgIdx = reqIt->second;
-
-    // Live local context wins.
-    if (msgIdxToContext.find(msgIdx) != msgIdxToContext.end()) {
-        return ResponseTarget{ ResponseTarget::LOCAL, "", 0 };
-    }
-
-    // Migrated — forward if we have a non-expired address.
-    auto fwdIt = forwardingTable.find(msgIdx);
-    if (fwdIt != forwardingTable.end()) {
-        if (std::chrono::steady_clock::now() > fwdIt->second.expiresAt) {
-            SPDLOG_DEBUG("RPC - Forwarding entry for msg {} expired", msgIdx);
-            forwardingTable.erase(fwdIt);
-        } else {
-            return ResponseTarget{ ResponseTarget::REMOTE,
-                                fwdIt->second.host,
-                                RPC_ASYNC_PORT };
-        }
-    }
-
-    return ResponseTarget{ ResponseTarget::UNDELIVERABLE, "", 0 };
-}
-
 void RpcContextRegistry::setForwardingAddress(
     int32_t msgIdx,
     std::string newHost,
@@ -147,7 +114,6 @@ void RpcContextRegistry::setForwardingAddress(
     };
     forwardingTable[msgIdx] = std::move(entry);
 }
-
 void RpcContextRegistry::markForwarded(int32_t msgIdx, uint32_t requestId)
 {
     faabric::util::FullLock lock(mx);
@@ -183,12 +149,51 @@ std::optional<std::string> RpcContextRegistry::getForwardingAddress(
     return it->second.host;
 }
 
+void RpcContextRegistry::cacheForwardedResponse(
+    uint32_t requestId, const faabric::RpcResponse& resp)
+{
+    faabric::util::FullLock lock(mx);
+    forwardedResponseCache[requestId] = resp;
+}
+
+std::optional<faabric::RpcResponse>
+RpcContextRegistry::consumeForwardedResponse(uint32_t requestId)
+{
+    faabric::util::FullLock lock(mx);
+    auto it = forwardedResponseCache.find(requestId);
+    if (it == forwardedResponseCache.end()) return std::nullopt;
+    auto resp = std::move(it->second);
+    forwardedResponseCache.erase(it);
+    return resp;
+}
+
+void RpcContextRegistry::registerPendingFetch(uint32_t requestId,
+                                               const std::string& host,
+                                               int port)
+{
+    faabric::util::FullLock lock(mx);
+    pendingFetches[requestId] = { host, port };
+}
+
+std::optional<PendingFetch>
+RpcContextRegistry::consumePendingFetch(uint32_t requestId)
+{
+    faabric::util::FullLock lock(mx);
+    auto it = pendingFetches.find(requestId);
+    if (it == pendingFetches.end()) return std::nullopt;
+    auto fetch = std::move(it->second);
+    pendingFetches.erase(it);
+    return fetch;
+}
+
 void RpcContextRegistry::reset()
 {
     faabric::util::FullLock lock(mx);
     msgIdxToContext.clear();
     requestToMsgIdx.clear();
     forwardingTable.clear();
+    forwardedResponseCache.clear();
+    pendingFetches.clear();
 }
 
 } // namespace faabric::rpc

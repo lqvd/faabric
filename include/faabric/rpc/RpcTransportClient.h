@@ -31,6 +31,8 @@ class RpcTransportClient
     
     void asyncSendResponse(const faabric::RpcResponse& resp);
 
+    void asyncSendFetch(const faabric::RpcFetchRequest& fetch);
+
   private:
     int asyncPort;
 

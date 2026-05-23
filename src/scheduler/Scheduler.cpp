@@ -3,6 +3,7 @@
 #include <faabric/planner/PlannerClient.h>
 #include <faabric/planner/planner.pb.h>
 #include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/snapshot/SnapshotClient.h>
@@ -194,6 +195,12 @@ int Scheduler::reapStaleExecutors()
         std::string mainHost = firstMsg.mainhost();
 
         for (auto exec : execs) {
+            // Never reap long-running services
+            if (exec->getBoundMessage().islongrunning()) {
+                SPDLOG_TRACE("Not reaping {}, long-running service", exec->id);
+                continue;
+            }
+
             long millisSinceLastExec = exec->getMillisSinceLastExec();
             if (millisSinceLastExec < conf.boundTimeout) {
                 // This executor has had an execution too recently
@@ -256,6 +263,7 @@ void Scheduler::executeBatch(std::shared_ptr<faabric::BatchExecuteRequest> req)
     faabric::util::FullLock lock(mx);
 
     bool isThreads = req->type() == faabric::BatchExecuteRequest::THREADS;
+    bool isService = req->type() == faabric::BatchExecuteRequest::SERVICE;
     auto funcStr = faabric::util::funcToString(req->messages(0), true);
 
     int nMessages = req->messages_size();
@@ -296,6 +304,41 @@ void Scheduler::executeBatch(std::shared_ptr<faabric::BatchExecuteRequest> req)
         std::vector<int> thisHostIdxs(req->messages_size());
         std::iota(thisHostIdxs.begin(), thisHostIdxs.end(), 0);
         e->executeTasks(thisHostIdxs, req);
+    } else if (isService) {
+        // Long-running service: claim a dedicated executor that won't be
+        // reaped or reused.
+        assert(req->messages_size() == 1);
+
+        faabric::Message& localMsg = req->mutable_messages()->at(0);
+        localMsg.set_islongrunning(true);
+
+        try {
+            auto exec = claimExecutor(localMsg, lock);
+
+            // Register the local RPC service queue before the Wasm service starts
+            // polling for requests via __faasm_rpc_get_request.
+            faabric::rpc::getRpcServer().registerServiceInstance(
+                localMsg.appid(),
+                localMsg.id());
+
+            exec->executeTasks({ 0 }, req);
+        } catch (std::exception& exc) {
+            SPDLOG_ERROR(
+                "{}:{}:{} Error trying to claim executor for service message {}",
+                localMsg.appid(),
+                localMsg.groupid(),
+                localMsg.groupidx(),
+                localMsg.id());
+
+            faabric::rpc::getRpcServer().unregisterServiceInstance(
+                localMsg.appid(),
+                localMsg.id());
+
+            localMsg.set_returnvalue(1);
+            localMsg.set_outputdata("Error trying to claim service executor");
+            faabric::planner::getPlannerClient().setMessageResult(
+                std::make_shared<faabric::Message>(localMsg));
+        }
     } else {
         // Non-threads require one executor per task
         for (int i = 0; i < nMessages; i++) {

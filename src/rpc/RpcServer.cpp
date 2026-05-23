@@ -1,19 +1,18 @@
 #include <faabric/rpc/RpcServer.h>
 
+#include <faabric/planner/planner.pb.h>
 #include <faabric/planner/PlannerClient.h>
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/rpc/RpcMessageType.h>
+#include <faabric/scheduler/Scheduler.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/batch.h>
 #include <faabric/util/config.h>
-#include <faabric/util/locks.h>
 #include <faabric/util/logging.h>
-#include <faabric/util/queue.h>
 
-#include <future>
 #include <stdexcept>
 
 namespace faabric::rpc {
@@ -26,166 +25,16 @@ RpcServer::RpcServer()
       faabric::util::getSystemConfig().rpcServerThreads)
 {}
 
-RpcServer::~RpcServer()
-{
-    stopSender();
-}
+RpcServer::~RpcServer() { }
 
 void RpcServer::start(int timeoutMs)
 {
-    startSender();
-    startReactor();
     faabric::transport::MessageEndpointServer::start();
 }
 
 void RpcServer::stop()
 {
     faabric::transport::MessageEndpointServer::stop();
-    stopReactor();
-    stopSender();
-}
-
-// -----------------------------------
-// sender
-// -----------------------------------
-
-void RpcServer::startSender()
-{
-    bool expected = false;
-    if (!senderRunning.compare_exchange_strong(expected, true)) {
-        return;
-    }
-
-    senderThread = std::thread([this] { senderLoop(); });
-}
-
-void RpcServer::stopSender()
-{
-    senderRunning.store(false);
-
-    if (senderThread.joinable()) {
-        senderThread.join();
-    }
-}
-
-void RpcServer::senderLoop()
-{
-    while (true) {
-        faabric::RpcResponse msg;
-
-        try {
-            msg = outboundQueue.dequeue(200);
-        } catch (const faabric::util::QueueTimeoutException&) {
-            if (!senderRunning.load()) {
-                break;
-            }
-            continue;
-        }
-        deliverResponse(msg);
-    }
-
-    // Drain anything left so in-flight responses get a final delivery attempt.
-    while (true) {
-        faabric::RpcResponse leftover;
-
-        try {
-            leftover = outboundQueue.dequeue(1);
-        } catch (const faabric::util::QueueTimeoutException&) {
-            break;
-        }
-
-        deliverResponse(leftover);
-    }
-}
-
-// -----------------------------------
-// reactor
-// -----------------------------------
-
-void RpcServer::startReactor()
-{
-    bool expected = false;
-    if (!reactorRunning.compare_exchange_strong(expected, true)) {
-        return;
-    }
-    reactorThread = std::thread([this] { reactorLoop(); });
-}
-
-void RpcServer::stopReactor()
-{
-    reactorRunning.store(false);
-    {
-        faabric::util::UniqueLock lock(pendingMx);
-        pendingCv.notify_all();
-    }
-    if (reactorThread.joinable()) {
-        reactorThread.join();
-    }
-}
-
-void RpcServer::reactorLoop()
-{
-    using namespace std::chrono_literals;
-
-    while (reactorRunning.load()) {
-        std::vector<PendingResponse> local;
-
-        {
-            faabric::util::UniqueLock lock(pendingMx);
-            pendingCv.wait_for(lock, 5ms, [this] {
-                return !pending.empty() || !reactorRunning.load();
-            });
-            local.swap(pending);
-        }
-
-        if (local.empty()) {
-            continue;
-        }
-
-        // Check each future once. Ready ones get translated and enqueued;
-        // not-ready ones go back into pending for the next pass.
-        std::vector<PendingResponse> stillPending;
-        stillPending.reserve(local.size());
-
-        for (auto& p : local) {
-            auto status = p.fut.wait_for(0ms);
-            if (status != std::future_status::ready) {
-                stillPending.push_back(std::move(p));
-                continue;
-            }
-
-            try {
-                auto resultMsg = p.fut.get();
-                faabric::RpcResponse resp;
-                resp.set_requestid(p.requestId);
-                resp.set_statuscode(resultMsg->returnvalue() == 0
-                                     ? Rpc_StatusCode::OK
-                                     : Rpc_StatusCode::INTERNAL);
-                if (!resultMsg->outputdata().empty()) {
-                    resp.set_payload(resultMsg->outputdata());
-                }
-                outboundQueue.enqueue(std::move(resp));
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("RPC - Failed to translate result for req {}: {}",
-                             p.requestId, e.what());
-                faabric::RpcResponse errResp;
-                errResp.set_requestid(p.requestId);
-                errResp.set_statuscode(Rpc_StatusCode::INTERNAL);
-                errResp.set_errormessage(e.what());
-                outboundQueue.enqueue(std::move(errResp));
-            }
-
-            faabric::planner::getPlannerClient().clearMessageResultPromise(
-              p.msgId);
-        }
-
-        if (!stillPending.empty()) {
-            faabric::util::UniqueLock lock(pendingMx);
-            for (auto& p : stillPending) {
-                pending.push_back(std::move(p));
-            }
-        }
-    }
 }
 
 // -----------------------------------
@@ -207,12 +56,14 @@ void RpcServer::doAsyncRecv(transport::Message& message)
             recvInvoke(message.udata());
             break;
         }
-
         case faabric::rpc::RpcMessageType::RESPONSE: {
             recvResponse(message.udata());
             break;
         }
-
+        case faabric::rpc::RpcMessageType::FETCH: {
+            recvFetch(message.udata());
+            break;
+        }
         default: {
             throw std::runtime_error(
               fmt::format("Unrecognized async RPC header: {}", header));
@@ -220,108 +71,111 @@ void RpcServer::doAsyncRecv(transport::Message& message)
     }
 }
 
+// -----------------------------------
+// inbound INVOKE
+// -----------------------------------
+
 void RpcServer::recvInvoke(std::span<const uint8_t> buffer)
 {
     faabric::RpcRequest req;
-
     if (!req.ParseFromArray(buffer.data(), buffer.size())) {
         SPDLOG_ERROR("RPC - Failed to parse RpcRequest");
         return;
     }
 
-    SPDLOG_INFO("RPC - Request arrived for requestId={} method={}",
+    SPDLOG_INFO("RPC - Targeted INVOKE arrived requestId={} method={} app={} msg={}",
                 req.requestid(),
-                req.method());
+                req.method(),
+                req.targetappid(),
+                req.targetmessageid());
 
-    auto target = resolveMethod(req.method());
-    if (!target.has_value()) {
-        SPDLOG_ERROR("RPC - Unknown method {}", req.method());
-
-        sendErrorResponseToReplyHost(req, Rpc_StatusCode::UNIMPLEMENTED,
-                                     "Unknown RPC method: " + req.method());
+    if (req.targetappid() == 0 || req.targetmessageid() == 0) {
+        sendErrorResponseToReplyHost(
+          req,
+          Rpc_StatusCode::INVALID_ARGUMENT,
+          "RPC invoke missing target service instance");
         return;
     }
 
-    dispatchRpcToFaasm(req, target.value());
+    try {
+        dispatchRpcToLocalService(req);
+        return;
+    } catch (const std::exception& e) {
+        auto forwardingHost = getServiceForwardingAddress(
+            req.targetappid(),
+            req.targetmessageid());
+
+        if (forwardingHost.has_value()) {
+            SPDLOG_INFO("RPC - Forwarding late INVOKE {} for app={} msg={} to {}",
+                        req.requestid(),
+                        req.targetappid(),
+                        req.targetmessageid(),
+                        forwardingHost.value());
+
+            forwardInvokeToHost(req, forwardingHost.value());
+            return;
+        }
+
+        SPDLOG_WARN("RPC - No local service instance or forwarding for app={}"
+                    "msg={}: {}",
+                    req.targetappid(),
+                    req.targetmessageid(),
+                    e.what());
+
+        sendErrorResponseToReplyHost(
+          req,
+          Rpc_StatusCode::UNAVAILABLE,
+          "Target service instance not available");
+    }
 }
+
+// -----------------------------------
+// inbound RESPONSE
+// -----------------------------------
 
 void RpcServer::recvResponse(std::span<const uint8_t> buffer)
 {
     faabric::RpcResponse resp;
-
     if (!resp.ParseFromArray(buffer.data(), buffer.size())) {
         SPDLOG_ERROR("RPC - Failed to parse RpcResponse");
         return;
     }
-
-    SPDLOG_INFO("RPC - Response arrived for requestId={}",
-                resp.requestid());
-
-    outboundQueue.enqueue(std::move(resp));
+    deliverResponse(resp);
 }
 
 // -----------------------------------
-// rpc dispatch
+// inbound FETCH
 // -----------------------------------
 
-void RpcServer::dispatchRpcToFaasm(const faabric::RpcRequest& req,
-                                   const RpcFunctionTarget& target)
+void RpcServer::recvFetch(std::span<const uint8_t> buffer)
 {
-    auto batch =
-      faabric::util::batchExecFactory(target.user, target.function, 1);
+    faabric::RpcFetchRequest fetch;
+    if (!fetch.ParseFromArray(buffer.data(), buffer.size())) {
+        SPDLOG_ERROR("RPC - Failed to parse RpcFetchRequest");
+        return;
+    }
 
-    batch->set_type(faabric::BatchExecuteRequest::RPC);
-
-    auto& msg = batch->mutable_messages()->at(0);
-    msg.set_type(faabric::Message::CALL);
-    msg.set_user(target.user);
-    msg.set_function(target.function);
-
-    msg.set_isrpc(true);
-    msg.set_rpcservice(req.method());
-
-    msg.set_rpcrequestid(req.requestid());
-    msg.set_rpcreplyhost(req.replyhost());
-    msg.set_rpcreplyport(req.replyport());
-
-    msg.set_inputdata(req.payload());
-
-    const int32_t msgId = msg.id();
-    const int32_t appId = msg.appid();
-
-    // Register request to msg mapping
+    const uint32_t requestId = fetch.requestid();
     auto& registry = getRpcContextRegistry();
-    registry.registerInFlightRequest(req.requestid(), msgId);
 
-    try {
-        // Register interest for the result BEFORE callFunctions so we don't
-        // miss the planner's notification on fast completions.
-        auto fut = faabric::planner::getPlannerClient()
-                       .getMessageResultAsync(appId, msgId);
-        faabric::planner::getPlannerClient().callFunctions(batch);
-        registerPending(req.requestid(), appId, msgId, std::move(fut));
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("RPC - Failed to dispatch requestId={}: {}",
-                     req.requestid(), e.what());
-        faabric::planner::getPlannerClient().clearMessageResultPromise(msgId);
-        registry.clearRequest(req.requestid());
-        sendErrorResponseToReplyHost(req, Rpc_StatusCode::INTERNAL, e.what());
+    auto cached = registry.consumeForwardedResponse(requestId);
+    if (cached.has_value()) {
+        SPDLOG_INFO("RPC - FETCH for {} — response ready, sending to {}:{}",
+                    requestId, fetch.replyhost(), fetch.replyport());
+        RpcTransportClient client(fetch.replyhost(), fetch.replyport(),
+                                  RPC_SYNC_PORT, kRpcTimeoutMs);
+        client.asyncSendResponse(cached.value());
+    } else {
+        SPDLOG_INFO("RPC - FETCH for {} — not ready, registering",
+                    requestId);
+        registry.registerPendingFetch(requestId,
+                                      fetch.replyhost(),
+                                      fetch.replyport());
     }
-}
-
-void RpcServer::registerPending(
-    uint32_t requestId, int appId, int msgId,
-    std::future<std::shared_ptr<faabric::Message>> fut)
-{
-    {
-        faabric::util::UniqueLock lock(pendingMx);
-        pending.push_back({requestId, appId, msgId, std::move(fut)});
-    }
-    pendingCv.notify_one();
 }
 
 // -----------------------------------
-// response (from invoke) handling
+// response delivery
 // -----------------------------------
 
 void RpcServer::deliverResponse(const faabric::RpcResponse& msg)
@@ -329,52 +183,45 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& msg)
     const uint32_t requestId = msg.requestid();
     auto& registry = getRpcContextRegistry();
 
-    ResponseTarget dest = registry.getResponseTarget(requestId);
-
-    if (dest.kind == ResponseTarget::LOCAL) {
-        if (auto ctx = registry.getContextForRequest(requestId)) {
-            SPDLOG_INFO("RPC - Delivering response {} to local context",
-                        requestId);
-            ctx->onResponseReceived(msg);
-            return;
-        }
-
-        // context can migrate after first getResponseTarget()
-        dest = registry.getResponseTarget(requestId);
-    }
-
-    if (dest.kind == ResponseTarget::REMOTE) {
-        SPDLOG_INFO("RPC - Forwarding response {} to {}:{}",
-                    requestId,
-                    dest.host,
-                    dest.port);
-
-        try {
-            RpcTransportClient client(dest.host,
-                                      dest.port,
-                                      RPC_SYNC_PORT,
-                                      rpcTimeoutMs);
-            client.asyncSendResponse(msg);
-
-            auto msgIdxOpt = registry.getMsgIdxForRequest(requestId);
-            if (msgIdxOpt.has_value()) {
-                registry.markForwarded(msgIdxOpt.value(), requestId);
-            }
-
-            registry.clearRequest(requestId);
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("RPC - Failed to forward response {} to {}:{}: {}",
-                         requestId,
-                         dest.host,
-                         dest.port,
-                         e.what());
-        }
+    // Local delivery, route directly to context
+    if (auto ctx = registry.getContextForRequest(requestId)) {
+        SPDLOG_INFO("RPC - Delivering response {} to local context", requestId);
+        ctx->onResponseReceived(msg);
         return;
     }
 
-    SPDLOG_WARN("RPC - Response {} undeliverable "
-                "(no context, no forwarding address); dropping",
-                requestId);
+    // Remote, lookup forwarding address
+    auto msgIdx = registry.getMsgIdxForRequest(requestId);
+    if (!msgIdx.has_value()) {
+        SPDLOG_WARN("RPC - Response {} undeliverable; dropping", requestId);
+        return;
+    }
+
+    auto destHost = registry.getForwardingAddress(msgIdx.value());
+    if (!destHost.has_value()) {
+        SPDLOG_WARN("RPC - No forwarding address for response {}; dropping", requestId);
+        return;
+    }
+
+    // Check if target already sent a FETCH
+    auto pendingFetch = registry.consumePendingFetch(requestId);
+    const std::string& host = pendingFetch.has_value() ? pendingFetch->host : destHost.value();
+    const int port = pendingFetch.has_value() ? pendingFetch->port : RPC_ASYNC_PORT;
+
+    if (!pendingFetch.has_value()) {
+        registry.cacheForwardedResponse(requestId, msg);
+    }
+
+    SPDLOG_INFO("RPC - Forwarding response {} to {}:{}", requestId, host, port);
+    try {
+        RpcTransportClient client(host, port, RPC_SYNC_PORT, kRpcTimeoutMs);
+        client.asyncSendResponse(msg);
+        registry.markForwarded(msgIdx.value(), requestId);
+        registry.clearRequest(requestId);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - Failed to forward response {} to {}:{}: {}",
+                     requestId, host, port, e.what());
+    }
 }
 
 // -----------------------------------
@@ -394,7 +241,7 @@ void RpcServer::sendErrorResponseToReplyHost(const faabric::RpcRequest& req,
         RpcTransportClient client(req.replyhost(),
                                   req.replyport(),
                                   RPC_SYNC_PORT,
-                                  rpcTimeoutMs);
+                                  kRpcTimeoutMs);
         client.asyncSendResponse(resp);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to send error response {} to {}:{}: {}",
@@ -405,7 +252,6 @@ void RpcServer::sendErrorResponseToReplyHost(const faabric::RpcRequest& req,
     }
 }
 
-
 std::optional<RpcFunctionTarget> RpcServer::resolveMethod(
   const std::string& method) const
 {
@@ -413,15 +259,13 @@ std::optional<RpcFunctionTarget> RpcServer::resolveMethod(
     // Example: /faabric.rpc.PingSvc/Ping
 
     if (method.empty() || method[0] != '/') {
-        SPDLOG_ERROR("RPC - Invalid method name '{}': missing leading '/'",
-                     method);
+        SPDLOG_ERROR("RPC - Invalid method name '{}': missing leading '/'", method);
         return std::nullopt;
     }
 
     const auto slashPos = method.find('/', 1);
     if (slashPos == std::string::npos) {
-        SPDLOG_ERROR("RPC - Invalid method name '{}': missing method slash",
-                     method);
+        SPDLOG_ERROR("RPC - Invalid method name '{}': missing method slash", method);
         return std::nullopt;
     }
 
@@ -433,8 +277,7 @@ std::optional<RpcFunctionTarget> RpcServer::resolveMethod(
 
     const auto dotPos = fullService.rfind('.');
     if (dotPos == std::string::npos) {
-        SPDLOG_ERROR("RPC - Invalid service name '{}': missing package",
-                     fullService);
+        SPDLOG_ERROR("RPC - Invalid service name '{}': missing package", fullService);
         return std::nullopt;
     }
 
@@ -444,13 +287,316 @@ std::optional<RpcFunctionTarget> RpcServer::resolveMethod(
 
     if (target.user.empty() || target.function.empty()) {
         SPDLOG_ERROR("RPC - Invalid target for method '{}': user='{}' function='{}'",
-                     method,
-                     target.user,
-                     target.function);
+                     method, target.user, target.function);
         return std::nullopt;
     }
 
     return target;
+}
+
+// -----------------------------------
+// service instances
+// -----------------------------------
+
+void RpcServer::registerServiceInstance(int32_t appId, int32_t messageId)
+{
+    if (appId == 0 || messageId == 0) {
+        throw std::runtime_error(
+          "Cannot register service instance with zero app/message id");
+    }
+
+    const ServiceInstanceKey key{ appId, messageId };
+
+    {
+        std::scoped_lock lock(servicesMx);
+
+        serviceQueues.try_emplace(
+          key,
+          std::make_shared<faabric::util::Queue<PendingInvocation>>());
+
+        // If this host now owns the instance, local stale forwarding is wrong.
+        serviceForwarding.erase(key);
+    }
+
+    SPDLOG_INFO("RPC - Registered service instance app={} msg={}",
+                appId,
+                messageId);
+}
+
+void RpcServer::unregisterServiceInstance(int32_t appId, int32_t messageId)
+{
+    const ServiceInstanceKey key{ appId, messageId };
+
+    {
+        std::scoped_lock lock(servicesMx);
+        serviceQueues.erase(key);
+    }
+
+    SPDLOG_INFO("RPC - Unregistered service instance app={} msg={}",
+                appId,
+                messageId);
+}
+
+void RpcServer::enqueueInvocation(int32_t appId,
+                                  int32_t messageId,
+                                  PendingInvocation invocation)
+{
+    std::shared_ptr<faabric::util::Queue<PendingInvocation>> queue;
+
+    {
+        std::scoped_lock lock(servicesMx);
+
+        const ServiceInstanceKey key{ appId, messageId };
+
+        auto fwdIt = serviceForwarding.find(key);
+        if (fwdIt != serviceForwarding.end()) {
+            const auto now = std::chrono::steady_clock::now();
+
+            if (now < fwdIt->second.expiry) {
+                throw std::runtime_error(
+                  fmt::format("Service instance app={} msg={} forwarded to {}",
+                              appId,
+                              messageId,
+                              fwdIt->second.host));
+            }
+
+            serviceForwarding.erase(fwdIt);
+        }
+
+        auto qIt = serviceQueues.find(key);
+        if (qIt == serviceQueues.end()) {
+            throw std::runtime_error(
+              fmt::format("No local service instance for app={} msg={}",
+                          appId,
+                          messageId));
+        }
+
+        queue = qIt->second;
+    }
+
+    queue->enqueue(std::move(invocation));
+}
+
+std::optional<PendingInvocation> RpcServer::tryDequeueInvocation(
+  int32_t appId,
+  int32_t messageId)
+{
+    std::shared_ptr<faabric::util::Queue<PendingInvocation>> queue;
+
+    {
+        std::scoped_lock lock(servicesMx);
+
+        const ServiceInstanceKey key{ appId, messageId };
+        auto it = serviceQueues.find(key);
+        if (it == serviceQueues.end()) {
+            return std::nullopt;
+        }
+
+        queue = it->second;
+    }
+
+    try {
+        return queue->dequeue(0);
+    } catch (const faabric::util::QueueTimeoutException&) {
+        return std::nullopt;
+    }
+}
+
+void RpcServer::dispatchRpcToLocalService(const faabric::RpcRequest& req)
+{
+    PendingInvocation inv{
+        .requestId = req.requestid(),
+        .method = req.method(),
+        .payload = req.payload(),
+        .replyHost = req.replyhost(),
+        .replyPort = req.replyport(),
+        .targetAppId = req.targetappid(),
+        .targetMessageId = req.targetmessageid(),
+        .targetGroupId = req.targetgroupid(),
+        .targetGroupIdx = req.targetgroupidx(),
+    };
+
+    enqueueInvocation(req.targetappid(), req.targetmessageid(), std::move(inv));
+}
+
+// -----------------------------------
+// service forwarding
+// -----------------------------------
+
+void RpcServer::setServiceForwardingAddress(int32_t appId,
+                                            int32_t messageId,
+                                            const std::string& host,
+                                            std::chrono::milliseconds ttl)
+{
+    if (appId == 0 || messageId == 0) {
+        throw std::runtime_error(
+          "Cannot set forwarding for zero app/message id");
+    }
+
+    if (host.empty()) {
+        throw std::runtime_error("Cannot set empty service forwarding host");
+    }
+
+    if (ttl.count() <= 0) {
+        throw std::runtime_error(
+          "Cannot set non-positive service forwarding TTL");
+    }
+
+    const ServiceInstanceKey key{ appId, messageId };
+
+    {
+        std::scoped_lock lock(servicesMx);
+        serviceForwarding[key] = ServiceForwardingEntry{
+            .host = host,
+            .expiry = std::chrono::steady_clock::now() + ttl,
+        };
+    }
+
+    SPDLOG_INFO("RPC - Set service forwarding for app={} msg={} to {} for {}ms",
+                appId,
+                messageId,
+                host,
+                ttl.count());
+}
+
+std::optional<std::string> RpcServer::getServiceForwardingAddress(
+  int32_t appId,
+  int32_t messageId)
+{
+    const ServiceInstanceKey key{ appId, messageId };
+
+    std::scoped_lock lock(servicesMx);
+
+    auto it = serviceForwarding.find(key);
+    if (it == serviceForwarding.end()) {
+        return std::nullopt;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= it->second.expiry) {
+        SPDLOG_DEBUG("RPC - Expired service forwarding for app={} msg={}",
+                     appId,
+                     messageId);
+        serviceForwarding.erase(it);
+        return std::nullopt;
+    }
+
+    return it->second.host;
+}
+
+void RpcServer::forwardInvokeToHost(const faabric::RpcRequest& req,
+                                    const std::string& host)
+{
+    SPDLOG_INFO("RPC - Forwarding INVOKE {} for app={} msg={} to {}",
+                req.requestid(),
+                req.targetappid(),
+                req.targetmessageid(),
+                host);
+
+    try {
+        RpcTransportClient client(host,
+                                  RPC_ASYNC_PORT,
+                                  RPC_SYNC_PORT,
+                                  kRpcTimeoutMs);
+        client.asyncSendRequest(req.requestid(), req);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - Failed to forward INVOKE {} to {}: {}",
+                     req.requestid(),
+                     host,
+                     e.what());
+        sendErrorResponseToReplyHost(req,
+                                     Rpc_StatusCode::INTERNAL,
+                                     "Failed to forward to service host");
+    }
+}
+
+void RpcServer::migrateServiceQueue(int32_t appId,
+                                    int32_t messageId,
+                                    const std::string& dstHost,
+                                    std::chrono::milliseconds ttl)
+{
+    if (appId == 0 || messageId == 0) {
+        throw std::runtime_error(
+          "Cannot migrate service queue for zero app/message id");
+    }
+
+    if (dstHost.empty()) {
+        throw std::runtime_error("Cannot migrate service queue to empty host");
+    }
+
+    if (ttl.count() <= 0) {
+        throw std::runtime_error(
+          "Cannot migrate service queue with non-positive TTL");
+    }
+
+    std::shared_ptr<faabric::util::Queue<PendingInvocation>> queue;
+
+    {
+        std::scoped_lock lock(servicesMx);
+
+        const ServiceInstanceKey key{ appId, messageId };
+
+        // First switch this service instance into forwarding mode. Any later
+        // enqueue attempt will fail and recvInvoke will forward instead.
+        serviceForwarding[key] = ServiceForwardingEntry{
+            .host = dstHost,
+            .expiry = std::chrono::steady_clock::now() + ttl,
+        };
+
+        // Remove local delivery and keep the queue pointer so we can drain it
+        // outside the mutex.
+        auto qIt = serviceQueues.find(key);
+        if (qIt != serviceQueues.end()) {
+            queue = qIt->second;
+            serviceQueues.erase(qIt);
+        }
+    }
+
+    std::vector<PendingInvocation> drained;
+
+    if (queue != nullptr) {
+        while (true) {
+            try {
+                drained.emplace_back(queue->dequeue(0));
+            } catch (const faabric::util::QueueTimeoutException&) {
+                break;
+            }
+        }
+    }
+
+    for (const auto& inv : drained) {
+        faabric::RpcRequest req;
+        req.set_requestid(inv.requestId);
+        req.set_method(inv.method);
+        req.set_payload(inv.payload);
+        req.set_replyhost(inv.replyHost);
+        req.set_replyport(inv.replyPort);
+
+        req.set_targetappid(inv.targetAppId);
+        req.set_targetmessageid(inv.targetMessageId);
+        req.set_targetgroupid(inv.targetGroupId);
+        req.set_targetgroupidx(inv.targetGroupIdx);
+
+        forwardInvokeToHost(req, dstHost);
+    }
+
+    SPDLOG_INFO("RPC - Migrated service queue app={} msg={} to {} "
+                "with {} drained invocations and forwarding TTL {}ms",
+                appId,
+                messageId,
+                dstHost,
+                drained.size(),
+                ttl.count());
+}
+
+// -----------------------------------
+// static getter
+// -----------------------------------
+
+RpcServer& getRpcServer()
+{
+    static RpcServer server;
+    return server;
 }
 
 } // namespace faabric::rpc

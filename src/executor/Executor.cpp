@@ -7,6 +7,7 @@
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcServer.h>
 #include <faabric/snapshot/SnapshotClient.h>
 #include <faabric/snapshot/SnapshotRegistry.h>
 #include <faabric/state/State.h>
@@ -621,6 +622,13 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 setThreadResult(msg, returnValue, "", {});
             }
         } else {
+            if (task.req->type() == faabric::BatchExecuteRequest::SERVICE ||
+                msg.islongrunning()) {
+                faabric::rpc::getRpcServer().unregisterServiceInstance(
+                  msg.appid(),
+                  msg.id());
+            }
+
             // Set normal function result
             faabric::planner::getPlannerClient().setMessageResult(
               std::make_shared<faabric::Message>(msg));

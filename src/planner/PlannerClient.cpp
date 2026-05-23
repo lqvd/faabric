@@ -455,6 +455,27 @@ void PlannerClient::preloadSchedulingDecision(
 }
 
 // -----------------------------------
+// Service management
+// -----------------------------------
+
+std::optional<ServiceEndpoint> PlannerClient::resolveServiceEndpoint(
+  const std::string& serviceName)
+{
+    DiscoverServiceRequest req;
+    req.set_servicename(serviceName);
+    req.set_callerhost(faabric::util::getSystemConfig().endpointHost);
+
+    DiscoverServiceResponse resp;
+    syncSend(PlannerCalls::DiscoverService, &req, &resp);
+
+    if (!resp.found()) {
+        return std::nullopt;
+    }
+
+    return resp.endpoint();
+}
+
+// -----------------------------------
 // Static setter/getters
 // -----------------------------------
 

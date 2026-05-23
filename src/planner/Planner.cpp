@@ -16,6 +16,7 @@
 #include <faabric/util/logging.h>
 
 #include <string>
+#include <tuple>
 
 // Special group ID magic to indicate MPI decisions that we have preemptively
 // scheduled
@@ -262,6 +263,8 @@ void Planner::flushSchedulingState()
 
     state.evictedRequests.clear();
     state.nextEvictedHostIps.clear();
+
+    state.serviceRrCounter.clear();
 }
 
 std::vector<std::shared_ptr<Host>> Planner::getAvailableHosts()
@@ -896,6 +899,7 @@ Planner::callBatch(std::shared_ptr<BatchExecuteRequest> req)
     if (isDistChange) {
         SPDLOG_INFO("App {} asked for migration opportunities", appId);
         auto oldReq = state.inFlightReqs.at(appId).first;
+        req->set_type(oldReq->type());
         req->set_subtype(oldReq->subtype());
         req->clear_messages();
         for (const auto& msg : oldReq->messages()) {
@@ -1405,6 +1409,85 @@ void Planner::setNextEvictedVm(const std::set<std::string>& vmIps)
     }
 
     state.nextEvictedHostIps = vmIps;
+}
+
+std::optional<ServiceEndpoint> Planner::discoverService(
+  const std::string& serviceName,
+  const std::string& callerHost)
+{
+    faabric::util::FullLock lock(plannerMx);
+
+    std::vector<ServiceEndpoint> endpoints;
+
+    for (const auto& [appId, inFlightPair] : state.inFlightReqs) {
+        const auto& req = inFlightPair.first;
+        const auto& decision = inFlightPair.second;
+
+        if (req->type() != faabric::BatchExecuteRequest::SERVICE) {
+            continue;
+        }
+
+        assert(req->messages_size() == decision->hosts.size());
+
+        for (int i = 0; i < req->messages_size(); i++) {
+            const auto& msg = req->messages(i);
+
+            const std::string thisService =
+              msg.user() + "/" + msg.function();
+
+            if (thisService != serviceName) {
+                continue;
+            }
+
+            const auto& host = decision->hosts.at(i);
+            if (!state.hostMap.contains(host)) {
+                SPDLOG_WARN("Ignoring service {} on unavailable host {}",
+                            serviceName,
+                            host);
+                continue;
+            }
+
+            ServiceEndpoint endpoint;
+            endpoint.set_servicename(serviceName);
+            endpoint.set_host(host);
+            endpoint.set_appid(appId);
+            endpoint.set_groupid(req->groupid());
+            endpoint.set_messageid(msg.id());
+            endpoint.set_groupidx(msg.groupidx());
+
+            endpoints.push_back(endpoint);
+        }
+    }
+
+    if (endpoints.empty()) {
+        return std::nullopt;
+    }
+
+    std::sort(endpoints.begin(), endpoints.end(),
+          [](const ServiceEndpoint& a, const ServiceEndpoint& b) {
+              return std::make_tuple(a.host(), a.appid(), a.messageid()) <
+                     std::make_tuple(b.host(), b.appid(), b.messageid());
+          });
+
+    if (!callerHost.empty()) {
+        std::vector<ServiceEndpoint> localEndpoints;
+        for (const auto& endpoint : endpoints) {
+            if (endpoint.host() == callerHost) {
+                localEndpoints.push_back(endpoint);
+            }
+        }
+
+        if (!localEndpoints.empty()) {
+            size_t idx =
+              state.serviceRrCounter[serviceName + "@local"]++ %
+              localEndpoints.size();
+
+            return localEndpoints.at(idx);
+        }
+    }
+
+    size_t idx = state.serviceRrCounter[serviceName]++ % endpoints.size();
+    return endpoints.at(idx);
 }
 
 Planner& getPlanner()

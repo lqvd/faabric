@@ -93,7 +93,7 @@ void FaabricMain::startStateServer()
 void FaabricMain::startRpcServer()
 {
     SPDLOG_INFO("Starting RPC server");
-    rpcServer.start();
+    faabric::rpc::getRpcServer().start();
 }
 
 void FaabricMain::shutdown()
@@ -113,7 +113,7 @@ void FaabricMain::shutdown()
     pointToPointServer.stop();
 
     SPDLOG_INFO("Waiting for the rpc server to finish");
-    rpcServer.stop();
+    faabric::rpc::getRpcServer().stop();
 
     auto& sch = faabric::scheduler::getScheduler();
     sch.shutdown();

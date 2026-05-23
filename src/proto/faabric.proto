@@ -34,7 +34,7 @@ message BatchExecuteRequest {
         THREADS = 1;
         PROCESSES = 2;
         MIGRATION = 3;
-        RPC = 4;
+        SERVICE = 4;
     }
 
     BatchExecuteType type = 5;
@@ -100,6 +100,7 @@ message Message {
         KILL = 1;
         EMPTY = 2;
         FLUSH = 3;
+        STOP = 4;
     }
 
     MessageType type = 5;
@@ -157,6 +158,7 @@ message Message {
     uint32 rpcRequestId = 43;
     string rpcReplyHost = 44;
     int32 rpcReplyPort = 45;
+    bool isLongRunning = 46 [json_name = "long_running"];
 }
 
 // ---------------------------------------------
@@ -266,16 +268,22 @@ message RpcMigrationState {
         int64 timeoutremaining = 5;
     }
 
-    repeated RpcChannelState channels = 1;
-    repeated RpcPendingRequest pendingRequests = 2;
+    string originHost = 1;
+    repeated RpcChannelState channels = 2;
+    repeated RpcPendingRequest pendingRequests = 3;
 }
 
 message RpcRequest {
-  string method = 1;
-  bytes payload = 2;
-  string replyhost = 4;
-  int32 replyport = 5;
-  uint32 requestId = 6;
+    uint32 requestId = 1;
+    string method = 2;
+    bytes payload = 3;
+    string replyHost = 4;
+    int32 replyPort = 5;
+
+    int32 targetAppId = 6;
+    int32 targetMessageId = 7;
+    int32 targetGroupId = 8;
+    int32 targetGroupIdx = 9;
 }
 
 message RpcResponse {
@@ -283,4 +291,10 @@ message RpcResponse {
   bytes payload = 2;
   uint32 requestId = 3;
   string errorMessage = 4;
+}
+
+message RpcFetchRequest {
+    uint32 requestId = 1;
+    string replyHost = 2;
+    int32 replyPort = 3;
 }
