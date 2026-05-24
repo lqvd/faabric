@@ -1249,6 +1249,8 @@ Planner::callBatch(std::shared_ptr<BatchExecuteRequest> req)
                                      appId);
                         decision->print("info");
                     }
+                } else {
+                    decision->mpiPorts.at(i) = oldDec->mpiPorts.at(i);
                 }
             }
 

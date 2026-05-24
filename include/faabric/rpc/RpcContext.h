@@ -18,11 +18,13 @@ namespace faabric::rpc {
 using namespace std::chrono_literals;
 static constexpr std::chrono::milliseconds kDefaultForwardingTtl = 30s;
 
-struct ChannelInfo
-{
+struct ChannelInfo {
     std::string targetUri;
     bool isFaabric;
     int port;
+    std::string targetHost;
+    int32_t targetAppId = 0;
+    int32_t targetMessageId = 0;
 };
 
 struct RpcOp

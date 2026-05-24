@@ -495,10 +495,10 @@ Scheduler::checkForMigrationOpportunities(faabric::Message& msg,
     int appId = msg.appid();
     int groupId = msg.groupid();
     int groupIdx = msg.groupidx();
-    SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
-                 appId,
-                 groupId,
-                 groupIdx);
+    // SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
+    //              appId,
+    //              groupId,
+    //              groupIdx);
 
     // TODO: maybe we could move this into a broker-specific function?
     int newGroupId = 0;

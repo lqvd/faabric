@@ -145,4 +145,36 @@ void RpcTransportClient::asyncSendFetch(const faabric::RpcFetchRequest& fetch)
     SPDLOG_TRACE("RPC - Sent fetch for requestId={}", fetch.requestid());
 }
 
+void RpcTransportClient::asyncSendShutdown(
+  const faabric::RpcShutdownRequest& shutdown)
+{
+    std::string buffer;
+    if (!shutdown.SerializeToString(&buffer)) {
+        SPDLOG_ERROR("RPC - Failed to serialise shutdown for app={} msg={}",
+                     shutdown.targetappid(),
+                     shutdown.targetmessageid());
+        return;
+    }
+
+    std::visit(
+    [&](auto& endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+        if constexpr (std::is_same_v<Endpoint, std::monostate>) {
+            SPDLOG_TRACE("RPC mock - dropping shutdown for app={} msg={}",
+                         shutdown.targetappid(),
+                         shutdown.targetmessageid());
+        } else {
+            endpoint.send(faabric::rpc::RpcMessageType::SHUTDOWN_SERVICE,
+                          BYTES_CONST(buffer.c_str()),
+                          buffer.size(),
+                          0);  // no requestId for control messages
+        }
+    },
+    asyncEndpoint);
+
+    SPDLOG_TRACE("RPC - Sent shutdown for app={} msg={}",
+                 shutdown.targetappid(),
+                 shutdown.targetmessageid());
+}
+
 } // namespace faabric::rpc

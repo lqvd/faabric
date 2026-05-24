@@ -105,6 +105,11 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
                              const std::string& dstHost,
                              std::chrono::milliseconds ttl);
 
+    // Request a graceful shutdown for service with appId and messageId.
+    void requestShutdown(int32_t appId, int32_t messageId);
+
+    bool isShutdownRequested(int32_t appId, int32_t messageId);
+
   protected:
     void doAsyncRecv(transport::Message& message) override;
 
@@ -120,6 +125,7 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     void recvInvoke(std::span<const uint8_t> buffer);
     void recvResponse(std::span<const uint8_t> buffer);
     void recvFetch(std::span<const uint8_t> buffer);
+    void recvShutdown(std::span<const uint8_t> buffer);
 
     std::optional<RpcFunctionTarget> resolveMethod(
       const std::string& method) const;
@@ -141,6 +147,9 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     std::unordered_map<ServiceInstanceKey,
                        ServiceForwardingEntry,
                        ServiceInstanceKeyHash> serviceForwarding;
+
+    std::unordered_set<ServiceInstanceKey, ServiceInstanceKeyHash>
+      shutdownRequested;
 
     void dispatchRpcToLocalService(const faabric::RpcRequest& req);
 

@@ -298,3 +298,8 @@ message RpcFetchRequest {
     string replyHost = 2;
     int32 replyPort = 3;
 }
+
+message RpcShutdownRequest {
+    int32 targetAppId = 1;
+    int32 targetMessageId = 2;
+}

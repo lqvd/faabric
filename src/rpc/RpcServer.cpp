@@ -64,6 +64,10 @@ void RpcServer::doAsyncRecv(transport::Message& message)
             recvFetch(message.udata());
             break;
         }
+        case faabric::rpc::RpcMessageType::SHUTDOWN_SERVICE: {
+            recvShutdown(message.udata());
+            break;
+        }
         default: {
             throw std::runtime_error(
               fmt::format("Unrecognized async RPC header: {}", header));
@@ -172,6 +176,20 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
                                       fetch.replyhost(),
                                       fetch.replyport());
     }
+}
+
+// -----------------------------------
+// inbound SHUTDOWN
+// -----------------------------------
+
+void RpcServer::recvShutdown(std::span<const uint8_t> buffer)
+{
+    faabric::RpcShutdownRequest req;
+    if (!req.ParseFromArray(buffer.data(), buffer.size())) {
+        SPDLOG_ERROR("RPC - Failed to parse RpcShutdownRequest");
+        return;
+    }
+    requestShutdown(req.targetappid(), req.targetmessageid());
 }
 
 // -----------------------------------
@@ -330,6 +348,7 @@ void RpcServer::unregisterServiceInstance(int32_t appId, int32_t messageId)
     {
         std::scoped_lock lock(servicesMx);
         serviceQueues.erase(key);
+        shutdownRequested.erase(key);
     }
 
     SPDLOG_INFO("RPC - Unregistered service instance app={} msg={}",
@@ -347,6 +366,12 @@ void RpcServer::enqueueInvocation(int32_t appId,
         std::scoped_lock lock(servicesMx);
 
         const ServiceInstanceKey key{ appId, messageId };
+
+        if (shutdownRequested.contains(key)) {
+            throw std::runtime_error(
+              fmt::format("Service instance app={} msg={} is shutting down",
+                          appId, messageId));
+        }
 
         auto fwdIt = serviceForwarding.find(key);
         if (fwdIt != serviceForwarding.end()) {
@@ -382,21 +407,22 @@ std::optional<PendingInvocation> RpcServer::tryDequeueInvocation(
   int32_t messageId)
 {
     std::shared_ptr<faabric::util::Queue<PendingInvocation>> queue;
-
     {
         std::scoped_lock lock(servicesMx);
-
         const ServiceInstanceKey key{ appId, messageId };
         auto it = serviceQueues.find(key);
         if (it == serviceQueues.end()) {
             return std::nullopt;
         }
-
         queue = it->second;
     }
 
+    if (queue->size() == 0) {
+        return std::nullopt;
+    }
+
     try {
-        return queue->dequeue(0);
+        return queue->dequeue(1);
     } catch (const faabric::util::QueueTimeoutException&) {
         return std::nullopt;
     }
@@ -587,6 +613,35 @@ void RpcServer::migrateServiceQueue(int32_t appId,
                 dstHost,
                 drained.size(),
                 ttl.count());
+}
+
+// -----------------------------------
+// shutdown
+// -----------------------------------
+
+void RpcServer::requestShutdown(int32_t appId, int32_t messageId)
+{
+    if (appId == 0 || messageId == 0) {
+        throw std::runtime_error(
+          "Cannot request shutdown for zero app/message id");
+    }
+
+    const ServiceInstanceKey key{ appId, messageId };
+
+    {
+        std::scoped_lock lock(servicesMx);
+        shutdownRequested.insert(key);
+    }
+
+    SPDLOG_INFO("RPC - Shutdown requested for service instance app={} msg={}",
+                appId, messageId);
+}
+
+bool RpcServer::isShutdownRequested(int32_t appId, int32_t messageId)
+{
+    const ServiceInstanceKey key{ appId, messageId };
+    std::scoped_lock lock(servicesMx);
+    return shutdownRequested.contains(key);
 }
 
 // -----------------------------------

@@ -1,6 +1,7 @@
 #include <faabric/rpc/RpcContext.h>
 
 #include <faabric/executor/ExecutorContext.h>
+#include <faabric/planner/PlannerClient.h>
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcTransportClient.h>
@@ -45,13 +46,28 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
 {
     if (!isFaabricUri(targetUri)) {
         throw std::runtime_error(
-            fmt::format("External RPC URIs are not implemented: {}", targetUri));
+            fmt::format("External RPC URIs not implemented: {}", targetUri));
+    }
+
+    const std::string serviceName = targetUri.substr(kFaabricScheme.size());
+    if (serviceName.empty()) {
+        throw std::runtime_error("Empty service name in faabric URI");
+    }
+
+    auto endpoint = faabric::planner::getPlannerClient()
+        .resolveServiceEndpoint(serviceName);
+    if (!endpoint.has_value()) {
+        throw std::runtime_error(
+            fmt::format("Service '{}' not found", serviceName));
     }
 
     return ChannelInfo{
         .targetUri = targetUri,
         .isFaabric = true,
-        .port = parseRpcPort(targetUri),
+        .port = RPC_ASYNC_PORT,
+        .targetHost = endpoint->host(),
+        .targetAppId = endpoint->appid(),
+        .targetMessageId = endpoint->messageid(),
     };
 }
 
@@ -66,23 +82,17 @@ RpcContext::RpcContext(int32_t ownerMsgIdIn)
 std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
   const ChannelInfo& info)
 {
-    // All faabric RPCs go through the local RpcServer... host is always local.
-    // Port comes from the URI, identifies which RpcServer port to target.
-    const std::string host = faabric::util::getSystemConfig().endpointHost;
-    const std::string key = host + ":" + std::to_string(info.port);
+    const std::string key =
+      info.targetHost + ":" + std::to_string(info.port);
 
     auto it = targetToTransport.find(key);
-    if (it != targetToTransport.end()) {
-        return it->second;
-    }
+    if (it != targetToTransport.end()) return it->second;
 
     auto transport = std::make_shared<RpcTransportClient>(
-        host, RPC_ASYNC_PORT, info.port, 5000);
-
+        info.targetHost, RPC_ASYNC_PORT, info.port, 5000);
     targetToTransport.emplace(key, transport);
     return transport;
 }
-
 int32_t RpcContext::createChannel(const std::string& targetUri)
 {
     ChannelInfo info = parseChannelInfo(targetUri);
@@ -282,6 +292,8 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 {
     std::shared_ptr<RpcTransportClient> transport;
     uint32_t requestId = 0;
+    int32_t targetAppId = 0;
+    int32_t targetMessageId = 0;
 
     {
         faabric::util::ScopedLock lock(mx);
@@ -300,6 +312,8 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         }
 
         transport = getOrCreateTransportLocked(info);
+        targetAppId = info.targetAppId;
+        targetMessageId = info.targetMessageId;
 
         requestId = nextRequestId.fetch_add(1, std::memory_order_relaxed);
 
@@ -316,16 +330,21 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 
     getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
 
+    const auto& cfg = faabric::util::getSystemConfig();
+
     faabric::RpcRequest req;
+    req.set_requestid(requestId);
     req.set_method(method);
     req.set_payload(reqBuffer, reqLength);
-    req.set_requestid(requestId);
+    req.set_targetappid(targetAppId);
+    req.set_targetmessageid(targetMessageId);
+    req.set_replyhost(cfg.endpointHost);
+    req.set_replyport(RPC_ASYNC_PORT);
 
     try {
         transport->asyncSendRequest(requestId, req);
     } catch (...) {
         faabric::util::ScopedLock lock(mx);
-
         auto it = ops.find(requestId);
         if (it != ops.end()) {
             it->second.ready = true;
