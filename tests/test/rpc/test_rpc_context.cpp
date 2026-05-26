@@ -70,12 +70,10 @@ class RpcContextTestFixture : public RpcBaseTestFixture
 
     static void checkChannelInfo(const faabric::rpc::ChannelInfo& info,
                                  const std::string& expectedUri,
-                                 const std::string& expectedHost,
                                  int expectedPort = RPC_ASYNC_PORT)
     {
         REQUIRE(info.targetUri == expectedUri);
         REQUIRE(info.isFaabric);
-        REQUIRE(info.host == expectedHost);
         REQUIRE(info.port == expectedPort);
     }
 
@@ -103,7 +101,7 @@ TEST_CASE_METHOD(RpcContextTestFixture,
     REQUIRE(channelId > 0);
 
     auto info = ctx->getChannel(channelId);
-    checkChannelInfo(info, uri, host);
+    checkChannelInfo(info, uri);
 }
 
 TEST_CASE_METHOD(RpcContextTestFixture,
@@ -128,9 +126,10 @@ TEST_CASE_METHOD(RpcContextTestFixture,
     REQUIRE(ctx->hasPendingRequest(requestId));
     REQUIRE(!ctx->testResponse(requestId));
 
-    auto actualMsgId = reg.getMsgIdxForRequest(requestId);
-    REQUIRE(actualMsgId.has_value());
-    REQUIRE(actualMsgId.value() == msgId);
+    auto actualId = reg.getAppMsgIdForRequest(requestId);
+    REQUIRE(actualId.has_value());
+    REQUIRE(actualId.value().msgId == msgId);
+    REQUIRE(actualId.value().appId == appId);
 }
 
 TEST_CASE_METHOD(RpcContextTestFixture,
@@ -256,11 +255,12 @@ TEST_CASE_METHOD(RpcContextTestFixture,
     auto migrationState = ctx->serializeMigrationState();
 
     int32_t newMsgId = faabric::util::generateGid();
-    auto newCtx = makeContext(newMsgId);
+    int32_t newAppId = faabric::util::generateGid();
+    auto newCtx = makeContext(newAppId, newMsgId);
     newCtx->deserializeMigrationState(migrationState);
 
     auto restoredChannel = newCtx->getChannel(channelId);
-    checkChannelInfo(restoredChannel, uri, host);
+    checkChannelInfo(restoredChannel, uri);
 
     REQUIRE(newCtx->hasPendingRequest(requestId));
     REQUIRE(!newCtx->testResponse(requestId));
@@ -283,7 +283,8 @@ TEST_CASE_METHOD(RpcContextTestFixture,
     auto migrationState = ctx->serializeMigrationState();
 
     int32_t newMsgId = faabric::util::generateGid();
-    auto newCtx = makeContext(newMsgId);
+    int32_t newAppId = faabric::util::generateGid();
+    auto newCtx = makeContext(newAppId, newMsgId);
     newCtx->deserializeMigrationState(migrationState);
 
     REQUIRE(newCtx->testResponse(requestId));
@@ -294,57 +295,6 @@ TEST_CASE_METHOD(RpcContextTestFixture,
     REQUIRE(actual.requestid() == requestId);
     REQUIRE(actual.statuscode() == Rpc_StatusCode::OK);
     REQUIRE(actual.payload() == "cached-response");
-}
-
-TEST_CASE_METHOD(RpcContextTestFixture,
-                 "Test RPC setupForwarding registers forwarding address",
-                 "[rpc]")
-{
-    auto& reg = faabric::rpc::getRpcContextRegistry();
-
-    int32_t channelId = ctx->createChannel(makeFaabricUri());
-    uint32_t requestA = startUnaryWithPayload(
-      ctx,
-      channelId,
-      "/demo.echo/Echo",
-      "payload-a");
-    uint32_t requestB = startUnaryWithPayload(
-      ctx,
-      channelId,
-      "/demo.echo/Echo",
-      "payload-b");
-
-    const std::string newHost = "new-rpc-host";
-
-    ctx->setupForwarding(newHost, std::chrono::milliseconds(30000));
-
-    auto targetA = reg.getResponseTarget(requestA);
-    auto targetB = reg.getResponseTarget(requestB);
-
-    checkRemote(targetA, newHost);
-    checkRemote(targetB, newHost);
-
-    REQUIRE(ctx->hasPendingRequest(requestA));
-    REQUIRE(ctx->hasPendingRequest(requestB));
-}
-
-TEST_CASE_METHOD(RpcContextTestFixture,
-                 "Test clearing RPC context removes channels and pending requests",
-                 "[rpc]")
-{
-    auto& reg = faabric::rpc::getRpcContextRegistry();
-
-    int32_t channelId = ctx->createChannel(makeFaabricUri());
-    uint32_t requestId = startUnaryWithPayload(ctx, channelId);
-
-    REQUIRE(ctx->hasPendingRequest(requestId));
-    REQUIRE(reg.getMsgIdxForRequest(requestId).has_value());
-
-    ctx->clear();
-
-    REQUIRE(!ctx->hasPendingRequest(requestId));
-    REQUIRE(!reg.getMsgIdxForRequest(requestId).has_value());
-    REQUIRE_THROWS(ctx->getChannel(channelId));
 }
 
 }

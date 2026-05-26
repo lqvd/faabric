@@ -380,9 +380,10 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
         if (msg.isrpc()) {
             SPDLOG_INFO("RPC - Registering context for msg {} (isMigration={})",
                         msg.id(), isMigration);
-            auto rpcCtx = std::make_shared<faabric::rpc::RpcContext>(msg.id());
+            auto rpcCtx =
+              std::make_shared<faabric::rpc::RpcContext>(msg.appid(), msg.id());
             faabric::rpc::getRpcContextRegistry().registerContext(
-                msg.id(), rpcCtx);
+                msg.appid(), msg.id(), rpcCtx);
         }
 
         // Execute the task
@@ -404,7 +405,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                             msg.funcptr());
 
                 auto& registry = faabric::rpc::getRpcContextRegistry();
-                auto rpcCtx = registry.getContext(msg.id());
+                auto rpcCtx = registry.getContext(msg.appid(), msg.id());
 
                 if (!rpcCtx) {
                     SPDLOG_ERROR("RPC - No context found for msg {} on restore",
@@ -461,7 +462,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 }
             } else if (msg.isrpc()) {
                 auto& registry = faabric::rpc::getRpcContextRegistry();
-                registry.removeContext(msg.id());
+                registry.removeContext(msg.appid(), msg.id());
             }
         } catch (const faabric::util::FunctionFrozenException& ex) {
             SPDLOG_DEBUG(
@@ -505,7 +506,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 }
             } else if (msg.isrpc()) {
                 auto& registry = faabric::rpc::getRpcContextRegistry();
-                registry.removeContext(msg.id());
+                registry.removeContext(msg.appid(), msg.id());
             }
         }
 

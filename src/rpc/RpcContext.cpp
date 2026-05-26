@@ -4,6 +4,7 @@
 #include <faabric/planner/PlannerClient.h>
 #include <faabric/rpc/rpc.h>
 #include <faabric/rpc/RpcContextRegistry.h>
+#include <faabric/rpc/RpcTracker.h>
 #include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/transport/common.h>
 #include <faabric/util/logging.h>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
 #include <string_view>
 #include <optional>
@@ -75,8 +77,9 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
 // rpc context state
 // -----------------------------------
 
-RpcContext::RpcContext(int32_t ownerMsgIdIn)
-  : ownerMsgId(ownerMsgIdIn) {}
+RpcContext::RpcContext(int32_t ownerAppIdIn, int32_t ownerMsgIdIn)
+  : ownerAppId(ownerAppIdIn) 
+  , ownerMsgId(ownerMsgIdIn) {}
 
 // Lock should be held.
 std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
@@ -249,10 +252,11 @@ void RpcContext::deserializeMigrationState(
     auto& reg = getRpcContextRegistry();
 
     for (const auto& pendingReq : migrationCtx.pendingrequests()) {
-        reg.registerInFlightRequest(pendingReq.requestid(), ownerMsgId);
+        reg.registerInFlightRequest(
+          pendingReq.requestid(), ownerAppId, ownerMsgId);
     }
 
-    reg.registerContext(ownerMsgId, shared_from_this());
+    reg.registerContext(ownerAppId, ownerMsgId, shared_from_this());
 
     for (const auto& pendingReq : migrationCtx.pendingrequests()) {
         if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
@@ -294,6 +298,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     uint32_t requestId = 0;
     int32_t targetAppId = 0;
     int32_t targetMessageId = 0;
+    std::string targetHost;
 
     {
         faabric::util::ScopedLock lock(mx);
@@ -314,6 +319,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         transport = getOrCreateTransportLocked(info);
         targetAppId = info.targetAppId;
         targetMessageId = info.targetMessageId;
+        targetHost = info.targetHost;
 
         requestId = nextRequestId.fetch_add(1, std::memory_order_relaxed);
 
@@ -328,7 +334,8 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         requestToChannel.emplace(requestId, channelId);
     }
 
-    getRpcContextRegistry().registerInFlightRequest(requestId, ownerMsgId);
+    getRpcContextRegistry().registerInFlightRequest(
+      requestId, ownerAppId, ownerMsgId);
 
     const auto& cfg = faabric::util::getSystemConfig();
 
@@ -343,6 +350,14 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 
     try {
         transport->asyncSendRequest(requestId, req);
+
+        const auto& cfg = faabric::util::getSystemConfig();
+        getRpcTracker().recordDependency(ownerAppId,
+                                        ownerMsgId,
+                                        targetAppId,
+                                        targetMessageId,
+                                        cfg.endpointHost,
+                                        targetHost);
     } catch (...) {
         faabric::util::ScopedLock lock(mx);
         auto it = ops.find(requestId);
@@ -497,13 +512,14 @@ void RpcContext::setupForwarding(const std::string& newHost,
     if (!pendingIds.empty()) {
         SPDLOG_INFO("PENDING ID SET!");
         reg.setForwardingAddress(
+          ownerAppId, 
           ownerMsgId,
           newHost,
           std::move(pendingIds),
           ttl);
     }
 
-    reg.removeContext(ownerMsgId);
+    reg.removeContext(ownerAppId, ownerMsgId);
 }
 
 } // namespace faabric::rpc

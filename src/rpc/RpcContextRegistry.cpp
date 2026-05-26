@@ -21,35 +21,55 @@ RpcContextRegistry& getRpcContextRegistry()
 // context handling
 // -----------------------------------
 
-void RpcContextRegistry::registerContext(int32_t msgIdx,
+void RpcContextRegistry::registerContext(int32_t appId, int32_t msgId,
                                          std::shared_ptr<RpcContext> ctx)
 {
-    faabric::util::SharedLock lock(mx);
-    msgIdxToContext[msgIdx] = std::move(ctx);
-    SPDLOG_TRACE("RPC - Registered Context ID {}", msgIdx);
-}
-
-std::shared_ptr<RpcContext> RpcContextRegistry::getContext(int32_t msgId)
-{
-    faabric::util::SharedLock lock(mx);
-    auto it = msgIdxToContext.find(msgId);
-    return it == msgIdxToContext.end() ? nullptr : it->second;
-}
-
-void RpcContextRegistry::removeContext(int32_t msgIdx)
-{
-    faabric::util::FullLock lock(mx);
-    msgIdxToContext.erase(msgIdx);
-    SPDLOG_TRACE("RPC - Removed context for msg {}", msgIdx);
-}
-
-void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
-{
     faabric::util::FullLock lock(mx);
 
-    for (auto it = requestToMsgIdx.begin(); it != requestToMsgIdx.end();) {
-        if (it->second == msgIdx) {
-            it = requestToMsgIdx.erase(it);
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+    contextByKey[key] = std::move(ctx);
+
+    SPDLOG_TRACE("RPC - Registered context app={} msg={}", appId, msgId);
+}
+
+std::shared_ptr<RpcContext> RpcContextRegistry::getContext(
+  int32_t appId, int32_t msgId)
+{
+    faabric::util::SharedLock lock(mx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+    auto it = contextByKey.find(key);
+
+    return it == contextByKey.end() ? nullptr : it->second;
+}
+
+void RpcContextRegistry::removeContext(int32_t appId, int32_t msgId)
+{
+    faabric::util::FullLock lock(mx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+    contextByKey.erase(key);
+
+    SPDLOG_TRACE("RPC - Removed context app={} msg={}", appId, msgId);
+}
+
+void RpcContextRegistry::clearRequest(uint32_t requestId)
+{
+    faabric::util::FullLock lock(mx);
+    requestToContextKey.erase(requestId);
+}
+
+void RpcContextRegistry::clearAllRequestsForContext(int32_t appId,
+                                                    int32_t msgId)
+{
+    faabric::util::FullLock lock(mx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+
+    for (auto it = requestToContextKey.begin();
+         it != requestToContextKey.end();) {
+        if (it->second == key) {
+            it = requestToContextKey.erase(it);
         } else {
             ++it;
         }
@@ -61,39 +81,40 @@ void RpcContextRegistry::clearAllRequestsForContext(int32_t msgIdx)
 // -----------------------------------
 
 void RpcContextRegistry::registerInFlightRequest(uint32_t requestId,
-                                                 int32_t msgIdx)
+                                                 int32_t appId,
+                                                 int32_t msgId)
 {
     faabric::util::FullLock lock(mx);
-    requestToMsgIdx[requestId] = msgIdx;
+
+    requestToContextKey[requestId] =
+      RpcAppMsgIds{ .appId = appId, .msgId = msgId };
 }
 
 std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
   uint32_t requestId)
 {
     faabric::util::SharedLock lock(mx);
-    auto reqIt = requestToMsgIdx.find(requestId);
-    if (reqIt == requestToMsgIdx.end()) {
+
+    auto reqIt = requestToContextKey.find(requestId);
+    if (reqIt == requestToContextKey.end()) {
         return nullptr;
     }
-    auto ctxIt = msgIdxToContext.find(reqIt->second);
-    return ctxIt == msgIdxToContext.end() ? nullptr : ctxIt->second;
+
+    auto ctxIt = contextByKey.find(reqIt->second);
+    return ctxIt == contextByKey.end() ? nullptr : ctxIt->second;
 }
 
-std::optional<int32_t> RpcContextRegistry::getMsgIdxForRequest(
+std::optional<RpcAppMsgIds> RpcContextRegistry::getAppMsgIdForRequest(
   uint32_t requestId)
 {
     faabric::util::SharedLock lock(mx);
-    auto it = requestToMsgIdx.find(requestId);
-    if (it == requestToMsgIdx.end()) {
+
+    auto it = requestToContextKey.find(requestId);
+    if (it == requestToContextKey.end()) {
         return std::nullopt;
     }
-    return it->second;
-}
 
-void RpcContextRegistry::clearRequest(uint32_t requestId)
-{
-    faabric::util::FullLock lock(mx);
-    requestToMsgIdx.erase(requestId);
+    return it->second;
 }
 
 // -----------------------------------
@@ -101,51 +122,76 @@ void RpcContextRegistry::clearRequest(uint32_t requestId)
 // -----------------------------------
 
 void RpcContextRegistry::setForwardingAddress(
-    int32_t msgIdx,
-    std::string newHost,
-    std::unordered_set<uint32_t> pendingRequestIds,
-    std::chrono::milliseconds ttl)
+  int32_t appId,
+  int32_t msgId,
+  std::string newHost,
+  std::unordered_set<uint32_t> pendingRequestIds,
+  std::chrono::milliseconds ttl)
 {
     faabric::util::FullLock lock(mx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+
     ForwardingEntry entry{
         .host = std::move(newHost),
         .pendingRequestIds = std::move(pendingRequestIds),
         .expiresAt = std::chrono::steady_clock::now() + ttl,
     };
-    forwardingTable[msgIdx] = std::move(entry);
+
+    forwardingTable[key] = std::move(entry);
 }
-void RpcContextRegistry::markForwarded(int32_t msgIdx, uint32_t requestId)
+
+void RpcContextRegistry::markForwarded(int32_t appId,
+                                       int32_t msgId,
+                                       uint32_t requestId)
 {
     faabric::util::FullLock lock(mx);
-    auto it = forwardingTable.find(msgIdx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+
+    auto it = forwardingTable.find(key);
     if (it == forwardingTable.end()) {
-        SPDLOG_WARN("RPC - markForwarded for msg {} with no forwarding entry",
-                    msgIdx);
+        SPDLOG_WARN(
+          "RPC - markForwarded for app={} msg={} with no forwarding entry",
+          appId,
+          msgId);
         return;
     }
+
     auto erased = it->second.pendingRequestIds.erase(requestId);
     if (erased == 0) {
-        SPDLOG_WARN("RPC - Forwarded resp {} for msg {} not in pending set",
-                    requestId, msgIdx);
+        SPDLOG_WARN(
+          "RPC - Forwarded resp {} for app={} msg={} not in pending set",
+          requestId,
+          appId,
+          msgId);
     }
+
     if (it->second.pendingRequestIds.empty()) {
         forwardingTable.erase(it);
     }
 }
 
 std::optional<std::string> RpcContextRegistry::getForwardingAddress(
-    int32_t msgIdx)
+  int32_t appId, int32_t msgId)
 {
     faabric::util::FullLock lock(mx);
-    auto it = forwardingTable.find(msgIdx);
+
+    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
+
+    auto it = forwardingTable.find(key);
     if (it == forwardingTable.end()) {
         return std::nullopt;
     }
+
     if (std::chrono::steady_clock::now() > it->second.expiresAt) {
-        SPDLOG_DEBUG("RPC - Forwarding entry for msg {} expired", msgIdx);
+        SPDLOG_DEBUG("RPC - Forwarding entry for app={} msg={} expired",
+                     appId,
+                     msgId);
         forwardingTable.erase(it);
         return std::nullopt;
     }
+
     return it->second.host;
 }
 
@@ -189,8 +235,9 @@ RpcContextRegistry::consumePendingFetch(uint32_t requestId)
 void RpcContextRegistry::reset()
 {
     faabric::util::FullLock lock(mx);
-    msgIdxToContext.clear();
-    requestToMsgIdx.clear();
+
+    contextByKey.clear();
+    requestToContextKey.clear();
     forwardingTable.clear();
     forwardedResponseCache.clear();
     pendingFetches.clear();

@@ -209,15 +209,18 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& msg)
     }
 
     // Remote, lookup forwarding address
-    auto msgIdx = registry.getMsgIdxForRequest(requestId);
-    if (!msgIdx.has_value()) {
+    auto key = registry.getAppMsgIdForRequest(requestId);
+    if (!key.has_value()) {
         SPDLOG_WARN("RPC - Response {} undeliverable; dropping", requestId);
         return;
     }
 
-    auto destHost = registry.getForwardingAddress(msgIdx.value());
+    auto destHost =
+    registry.getForwardingAddress(key->appId, key->msgId);
+
     if (!destHost.has_value()) {
-        SPDLOG_WARN("RPC - No forwarding address for response {}; dropping", requestId);
+        SPDLOG_WARN("RPC - No forwarding address for response {}; dropping",
+                    requestId);
         return;
     }
 
@@ -234,7 +237,7 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& msg)
     try {
         RpcTransportClient client(host, port, RPC_SYNC_PORT, kRpcTimeoutMs);
         client.asyncSendResponse(msg);
-        registry.markForwarded(msgIdx.value(), requestId);
+        registry.markForwarded(key->appId, key->msgId, requestId);
         registry.clearRequest(requestId);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to forward response {} to {}:{}: {}",

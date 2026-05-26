@@ -303,3 +303,20 @@ message RpcShutdownRequest {
     int32 targetAppId = 1;
     int32 targetMessageId = 2;
 }
+
+message RpcDependencyEdge {
+    int32 callerAppId = 1;
+    int32 callerMsgId = 2;
+
+    int32 calleeAppId = 3;
+    int32 calleeMsgId = 4;
+
+    string callerHost = 5;
+    string calleeHost = 6;
+
+    uint64 observations = 7;
+}
+
+message RpcDependencyBatch {
+    repeated RpcDependencyEdge edges = 1;
+}

@@ -78,7 +78,7 @@
 //     registerHandler("/pkg.TestSvc/TestMethod",
 //       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
 //           out.assign(data, data + len);
-//           return Rpc_Status{ Rpc_StatusCode::OK, "" };
+//           return faabric::rpc::Status{ Rpc_StatusCode::OK, "" };
 //       });
 
 //     int32_t ch = localChannel();
@@ -98,7 +98,7 @@
 //     registerHandler("/pkg.TestSvc/Binary",
 //       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
 //           out.assign(data, data + len);
-//           return Rpc_Status{ Rpc_StatusCode::OK, "" };
+//           return faabric::rpc::Status{ Rpc_StatusCode::OK, "" };
 //       });
 
 //     int32_t ch = localChannel();
@@ -117,7 +117,7 @@
 // {
 //     registerHandler("/pkg.TestSvc/TestMethod",
 //       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
-//           return Rpc_Status{ 7, "" };
+//           return faabric::rpc::Status{ 7, "" };
 //       });
 
 //     int32_t ch = localChannel();
@@ -146,7 +146,7 @@
 // {
 //     registerHandler("/pkg.TestSvc/Empty",
 //       [](const uint8_t*, size_t, std::vector<uint8_t>&) {
-//           return Rpc_Status{ Rpc_StatusCode::OK, "" };
+//           return faabric::rpc::Status{ Rpc_StatusCode::OK, "" };
 //       });
 
 //     int32_t ch = localChannel();
@@ -169,7 +169,7 @@
 //     registerHandler("/pkg.TestSvc/Large",
 //       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
 //           out.assign(data, data + len);
-//           return Rpc_Status{ Rpc_StatusCode::OK, "" };
+//           return faabric::rpc::Status{ Rpc_StatusCode::OK, "" };
 //       });
 
 //     int32_t ch = localChannel();
@@ -189,7 +189,7 @@
 //     registerHandler("/pkg.TestSvc/TestMethod",
 //       [](const uint8_t* data, size_t len, std::vector<uint8_t>& out) {
 //           out.assign(data, data + len);
-//           return Rpc_Status{ Rpc_StatusCode::OK, "" };
+//           return faabric::rpc::Status{ Rpc_StatusCode::OK, "" };
 //       });
 
 //     int32_t ch = localChannel();

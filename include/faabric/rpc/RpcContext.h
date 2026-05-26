@@ -37,7 +37,7 @@ struct RpcOp
 class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
-    RpcContext(int32_t ownerMsgIdIn);
+    RpcContext(int32_t ownerAppIdIn, int32_t ownerMsgIdIn);
 
     ~RpcContext() = default;
 
@@ -92,6 +92,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     static std::atomic<uint32_t> nextRequestId;
     std::atomic<int32_t> nextChannelId{ 1 };
 
+    const int32_t ownerAppId;
     const int32_t ownerMsgId;
 
     mutable std::mutex mx;
