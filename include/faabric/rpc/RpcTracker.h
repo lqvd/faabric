@@ -1,5 +1,7 @@
 #pragma once
 
+#include <faabric/proto/faabric.pb.h>
+
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -90,6 +92,8 @@ class RpcTracker
     mutable std::mutex mx_;
     std::unordered_map<EdgeKey, EdgeState, EdgeKeyHash> edges_;
 };
+
+faabric::RpcDependencyBatch snapshotRpcDependencyTelemetry();
 
 RpcTracker& getRpcTracker();
 

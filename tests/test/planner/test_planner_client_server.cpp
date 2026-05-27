@@ -28,14 +28,16 @@ TEST_CASE_METHOD(PlannerClientServerFixture,
     regReq->mutable_host()->set_slots(12);
     int plannerTimeout;
 
-    REQUIRE_NOTHROW(plannerTimeout = plannerCli.registerHost(regReq));
+    REQUIRE_NOTHROW(
+      plannerTimeout = plannerCli.registerHost(regReq).hosttimeout());
 
     // A call to register a host returns the keep-alive timeout
     REQUIRE(plannerTimeout > 0);
 
     // We can register the host again, and get the same timeout
     int newTimeout;
-    REQUIRE_NOTHROW(newTimeout = plannerCli.registerHost(regReq));
+    REQUIRE_NOTHROW(
+      newTimeout = plannerCli.registerHost(regReq).hosttimeout());
     REQUIRE(newTimeout == plannerTimeout);
 }
 

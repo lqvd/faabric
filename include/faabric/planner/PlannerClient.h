@@ -32,6 +32,14 @@ class KeepAliveThread : public faabric::util::PeriodicBackgroundThread
     std::shared_mutex keepAliveThreadMx;
 };
 
+/* Periodically send telemetry data from services to planner.
+ */
+class RpcTelemetryThread : public faabric::util::PeriodicBackgroundThread
+{
+  public:
+    void doWork() override;
+};
+
 /*
  * Local state associated with the current host, used to store useful state
  * like cached results to unnecessary interactions with the planner server.
@@ -66,8 +74,10 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
 
     std::vector<Host> getAvailableHosts();
 
-    // Registering a host returns the keep-alive timeout for heartbeats
-    int registerHost(std::shared_ptr<RegisterHostRequest> req);
+    // Registering a host returns the planner config for heartbeat and rpc
+    // telemetry
+    faabric::planner::PlannerConfig registerHost(
+      std::shared_ptr<RegisterHostRequest> req);
 
     void removeHost(std::shared_ptr<RemoveHostRequest> req);
 
@@ -97,9 +107,6 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
 
     void preloadSchedulingDecision(
       std::shared_ptr<faabric::batch_scheduler::SchedulingDecision> preloadDec);
-    
-    std::future<std::shared_ptr<faabric::Message>> getMessageResultAsync(
-      int appId, int msgId);
 
     void clearMessageResultPromise(int msgId);
 
@@ -108,7 +115,9 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
     // ------
 
     std::optional<ServiceEndpoint> resolveServiceEndpoint(
-        const std::string& serviceName);
+      const std::string& serviceName);
+
+    void reportRpcDependencies(faabric::RpcDependencyBatch& batch);
 
   private:
     std::mutex plannerCacheMx;

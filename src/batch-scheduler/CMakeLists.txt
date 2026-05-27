@@ -7,6 +7,7 @@ faabric_lib(batch_scheduler
     BatchScheduler.cpp
     BinPackScheduler.cpp
     CompactScheduler.cpp
+    ServiceLocalityScheduler.cpp
     SpotScheduler.cpp
 )
 

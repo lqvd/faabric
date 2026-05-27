@@ -67,7 +67,7 @@ void Scheduler::addHostToGlobalSet(
         req->mutable_host()->set_usedslots(0);
     }
 
-    int plannerTimeout = faabric::planner::getPlannerClient().registerHost(req);
+    auto plannerConfig = faabric::planner::getPlannerClient().registerHost(req);
 
     // Once the host is registered, set-up a periodic thread to send a heart-
     // beat to the planner. Note that this method may be called multiple times
@@ -76,7 +76,8 @@ void Scheduler::addHostToGlobalSet(
     // if not in test mode
     if (hostIp == thisHost && !faabric::util::isTestMode()) {
         keepAliveThread.setRequest(req);
-        keepAliveThread.start(plannerTimeout / 2);
+        keepAliveThread.start(plannerConfig.hosttimeout() / 2);
+        rpcTelemetryThread.start(plannerConfig.rpctelemetryinterval());
     }
 }
 
@@ -101,6 +102,7 @@ void Scheduler::removeHostFromGlobalSet(const std::string& hostIp)
     // Clear the keep alive thread
     if (isThisHost) {
         keepAliveThread.stop();
+        rpcTelemetryThread.stop();
     }
 }
 
@@ -495,22 +497,40 @@ Scheduler::checkForMigrationOpportunities(faabric::Message& msg,
     int appId = msg.appid();
     int groupId = msg.groupid();
     int groupIdx = msg.groupidx();
-    // SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
-    //              appId,
-    //              groupId,
-    //              groupIdx);
+
+    SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
+                 appId,
+                 groupId,
+                 groupIdx);
 
     // TODO: maybe we could move this into a broker-specific function?
     int newGroupId = 0;
     if (groupIdx == 0) {
-        // To check for migration opportunities, we request a scheduling
-        // decision for the same batch execute request, but setting the
-        // migration flag
-        auto req =
-          faabric::util::batchExecFactory(msg.user(), msg.function(), 1);
-        faabric::util::updateBatchExecAppId(req, msg.appid());
-        faabric::util::updateBatchExecGroupId(req, msg.groupid());
-        req->set_type(faabric::BatchExecuteRequest::MIGRATION);
+        std::shared_ptr<faabric::BatchExecuteRequest> req;
+
+        const bool isRpcService = msg.isrpc() && msg.islongrunning();
+
+        if (isRpcService) {
+            req = faabric::util::batchExecFactory();
+            req->set_appid(msg.appid());
+            req->set_groupid(msg.groupid());
+            req->set_user(msg.user());
+            req->set_function(msg.function());
+            req->set_type(faabric::BatchExecuteRequest::MIGRATION);
+
+            auto* migMsg = req->add_messages();
+            *migMsg = msg;
+            migMsg->set_executeslocally(false);
+        } else {
+            // To check for migration opportunities, we request a scheduling
+            // decision for the same batch execute request, but setting the
+            // migration flag
+            req = faabric::util::batchExecFactory(msg.user(), msg.function(), 1);
+            faabric::util::updateBatchExecAppId(req, msg.appid());
+            faabric::util::updateBatchExecGroupId(req, msg.groupid());
+            req->set_type(faabric::BatchExecuteRequest::MIGRATION);
+        }
+
         auto decision = planner::getPlannerClient().callFunctions(req);
 
         // Update the group ID if we want to migrate

@@ -1,6 +1,7 @@
 #include <faabric/planner/PlannerApi.h>
 #include <faabric/planner/PlannerClient.h>
 #include <faabric/planner/planner.pb.h>
+#include <faabric/rpc/RpcTracker.h>
 #include <faabric/snapshot/SnapshotClient.h>
 #include <faabric/snapshot/SnapshotRegistry.h>
 #include <faabric/transport/common.h>
@@ -38,6 +39,24 @@ void KeepAliveThread::setRequest(
 
     // Keep-alive requests should never overwrite the state of the planner
     thisHostReq->set_overwrite(false);
+}
+
+// -----------------------------------
+// Rpc Telemetry Thread
+// -----------------------------------
+
+void RpcTelemetryThread::doWork()
+{
+    auto batch = faabric::rpc::snapshotRpcDependencyTelemetry();
+    if (batch.edges_size() == 0) {
+        return;
+    }
+
+    try {
+        faabric::planner::getPlannerClient().reportRpcDependencies(batch);
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("Failed to flush RPC telemetry: {}", e.what());
+    }
 }
 
 // -----------------------------------
@@ -106,7 +125,8 @@ std::vector<faabric::planner::Host> PlannerClient::getAvailableHosts()
     return availableHosts;
 }
 
-int PlannerClient::registerHost(std::shared_ptr<RegisterHostRequest> req)
+faabric::planner::PlannerConfig PlannerClient::registerHost(
+  std::shared_ptr<RegisterHostRequest> req)
 {
     RegisterHostResponse resp;
     syncSend(PlannerCalls::RegisterHost, req.get(), &resp);
@@ -117,9 +137,10 @@ int PlannerClient::registerHost(std::shared_ptr<RegisterHostRequest> req)
 
     // Sanity check
     assert(resp.config().hosttimeout() > 0);
+    assert(resp.config().rpctelemetryinterval() > 0);
 
     // Return the planner's timeout to set the keep-alive heartbeat
-    return resp.config().hosttimeout();
+    return resp.config();
 }
 
 void PlannerClient::removeHost(std::shared_ptr<RemoveHostRequest> req)
@@ -266,41 +287,6 @@ faabric::Message PlannerClient::doGetMessageResult(
 
         return msgResult;
     }
-}
-
-std::future<std::shared_ptr<faabric::Message>>
-PlannerClient::getMessageResultAsync(int appId, int msgId)
-{
-    auto msgPtr = std::make_shared<faabric::Message>();
-    msgPtr->set_appid(appId);
-    msgPtr->set_id(msgId);
-    msgPtr->set_mainhost(faabric::util::getSystemConfig().endpointHost);
-
-    // See if the planner already has the result. If so, complete the
-    // future immediately and return it — no need to register interest.
-    auto resMsgPtr = getMessageResultFromPlanner(msgPtr);
-    if (resMsgPtr) {
-        std::promise<std::shared_ptr<faabric::Message>> p;
-        p.set_value(resMsgPtr);
-        return p.get_future();
-    }
-
-    // Not ready. Register interest by inserting a promise into the cache;
-    // setMessageResultLocally will fulfil it when the planner notifies us.
-    std::future<std::shared_ptr<faabric::Message>> fut;
-    {
-        faabric::util::UniqueLock lock(plannerCacheMx);
-
-        auto it = cache.plannerResults.find(msgId);
-        if (it == cache.plannerResults.end()) {
-            it = cache.plannerResults
-                   .insert({ msgId, std::make_shared<MessageResultPromise>() })
-                   .first;
-        }
-        fut = it->second->get_future();
-    }
-
-    return fut;
 }
 
 void PlannerClient::clearMessageResultPromise(int msgId)
@@ -475,6 +461,11 @@ std::optional<ServiceEndpoint> PlannerClient::resolveServiceEndpoint(
     return resp.endpoint();
 }
 
+void PlannerClient::reportRpcDependencies(
+  faabric::RpcDependencyBatch& batch)
+{
+    asyncSend(PlannerCalls::ReportRpcDependencies, &batch);
+}
 // -----------------------------------
 // Static setter/getters
 // -----------------------------------

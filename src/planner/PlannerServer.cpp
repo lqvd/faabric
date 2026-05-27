@@ -1,6 +1,7 @@
 #include <faabric/planner/PlannerApi.h>
 #include <faabric/planner/PlannerServer.h>
 #include <faabric/planner/planner.pb.h>
+#include <faabric/rpc/RpcDependencyGraph.h>
 #include <faabric/transport/common.h>
 #include <faabric/transport/macros.h>
 #include <faabric/util/config.h>
@@ -25,6 +26,10 @@ void PlannerServer::doAsyncRecv(transport::Message& message)
     switch (header) {
         case PlannerCalls::SetMessageResult: {
             recvSetMessageResult(message.udata());
+            break;
+        }
+        case PlannerCalls::ReportRpcDependencies: {
+            recvReportRpcDependencies(message.udata());
             break;
         }
         default: {
@@ -147,6 +152,14 @@ void PlannerServer::recvSetMessageResult(std::span<const uint8_t> buffer)
 {
     PARSE_MSG(Message, buffer.data(), buffer.size());
     planner.setMessageResult(std::make_shared<faabric::Message>(parsedMsg));
+}
+
+void PlannerServer::recvReportRpcDependencies(std::span<const uint8_t> buffer)
+{
+    PARSE_MSG(RpcDependencyBatch, buffer.data(), buffer.size());
+    SPDLOG_TRACE("Planner received RPC telemetry batch with {} edges",
+                 parsedMsg.edges_size());
+    faabric::rpc::getRpcDependencyGraph().mergeTelemetry(parsedMsg);
 }
 
 std::unique_ptr<google::protobuf::Message> PlannerServer::recvGetMessageResult(

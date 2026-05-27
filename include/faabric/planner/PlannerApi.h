@@ -20,5 +20,7 @@ enum PlannerCalls
     PreloadSchedulingDecision = 14,
     // Service discovery calls
     DiscoverService = 15,
+    // RPC telemetry
+    ReportRpcDependencies = 16,
 };
 }

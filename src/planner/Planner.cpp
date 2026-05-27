@@ -168,6 +168,8 @@ Planner::Planner()
       faabric::util::getEnvVar("PLANNER_HOST_KEEPALIVE_TIMEOUT", "5")));
     config.set_numthreadshttpserver(
       std::stoi(faabric::util::getEnvVar("PLANNER_HTTP_SERVER_THREADS", "4")));
+    config.set_rpctelemetryinterval(std::stoi(
+      faabric::util::getEnvVar("PLANNER_RPC_TELEMETRY_INTERVAL", "1")));
 
     printConfig();
 }
@@ -182,6 +184,7 @@ void Planner::printConfig() const
     SPDLOG_INFO("--- Planner Conifg ---");
     SPDLOG_INFO("HOST_KEEP_ALIVE_TIMEOUT    {}", config.hosttimeout());
     SPDLOG_INFO("HTTP_SERVER_THREADS        {}", config.numthreadshttpserver());
+    SPDLOG_INFO("RPC_TELEMETRY_INTERVAL     {}", config.rpctelemetryinterval());
 }
 
 std::string Planner::getPolicy()
@@ -899,7 +902,6 @@ Planner::callBatch(std::shared_ptr<BatchExecuteRequest> req)
     if (isDistChange) {
         SPDLOG_INFO("App {} asked for migration opportunities", appId);
         auto oldReq = state.inFlightReqs.at(appId).first;
-        req->set_type(oldReq->type());
         req->set_subtype(oldReq->subtype());
         req->clear_messages();
         for (const auto& msg : oldReq->messages()) {

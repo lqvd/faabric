@@ -124,6 +124,7 @@ class Scheduler
 
     // ---- Planner----
     faabric::planner::KeepAliveThread keepAliveThread;
+    faabric::planner::RpcTelemetryThread rpcTelemetryThread;
 
     // ---- Actual scheduling ----
     SchedulerReaperThread reaperThread;

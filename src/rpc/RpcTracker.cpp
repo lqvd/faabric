@@ -1,5 +1,7 @@
 #include <faabric/rpc/RpcTracker.h>
 
+#include <faabric/proto/faabric.pb.h>
+
 namespace faabric::rpc {
 
 void RpcTracker::recordDependency(int32_t callerAppId,
@@ -63,6 +65,29 @@ void RpcTracker::clear()
 {
     std::scoped_lock lock(mx_);
     edges_.clear();
+}
+
+faabric::RpcDependencyBatch snapshotRpcDependencyTelemetry()
+{
+    auto deltas = getRpcTracker().snapshotAndResetDeltas();
+
+    faabric::RpcDependencyBatch batch;
+
+    for (const auto& d : deltas) {
+        auto* edge = batch.add_edges();
+
+        edge->set_callerappid(d.caller.appId);
+        edge->set_callermsgid(d.caller.msgId);
+        edge->set_calleeappid(d.callee.appId);
+        edge->set_calleemsgid(d.callee.msgId);
+
+        edge->set_callerhost(d.callerHost);
+        edge->set_calleehost(d.calleeHost);
+
+        edge->set_observations(d.observations);
+    }
+
+    return batch;
 }
 
 RpcTracker& getRpcTracker()

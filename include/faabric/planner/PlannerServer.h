@@ -19,6 +19,8 @@ class PlannerServer final : public faabric::transport::MessageEndpointServer
 
     void recvSetMessageResult(std::span<const uint8_t> buffer);
 
+    void recvReportRpcDependencies(std::span<const uint8_t> buffer);
+
     // Synchronous calls
 
     std::unique_ptr<google::protobuf::Message> recvPing();
