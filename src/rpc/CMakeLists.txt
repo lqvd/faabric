@@ -3,6 +3,7 @@ faabric_lib(rpc
     RpcContext.cpp
     RpcContextRegistry.cpp
     RpcServer.cpp
+    RpcServiceResolver.cpp
     RpcTracker.cpp
     RpcTransportClient.cpp
 )

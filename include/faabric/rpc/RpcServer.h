@@ -26,6 +26,10 @@ namespace faabric::rpc {
 
 static constexpr int kRpcTimeoutMs = 5000;
 
+// -----------------------------------
+// data structures
+// -----------------------------------
+
 struct PendingInvocation
 {
     uint32_t requestId = 0;
@@ -75,10 +79,15 @@ struct RpcFunctionTarget
     std::string function;
 };
 
+// -----------------------------------
+// server
+// -----------------------------------
+
 class RpcServer final : public faabric::transport::MessageEndpointServer
 {
   public:
     RpcServer();
+
     ~RpcServer();
 
     void start(int timeoutMs = DEFAULT_SOCKET_TIMEOUT_MS) override;

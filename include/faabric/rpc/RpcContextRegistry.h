@@ -1,20 +1,25 @@
 #pragma once
 
-#include <faabric/rpc/RpcContext.h>
-#include <faabric/util/concurrent_map.h>
-
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 #include <shared_mutex>
+#include <string>
+#include <unordered_map>
+
+namespace faabric {
+class RpcResponse;
+}
 
 namespace faabric::rpc {
+
+class RpcContext;
 
 using namespace std::literals::chrono_literals;
 
 static constexpr int32_t kTimeoutTtlMultiplier = 2;
+static constexpr std::chrono::milliseconds kDefaultRpcRequestTtl = 5min;
 
 struct RpcAppMsgIds
 {
@@ -37,15 +42,10 @@ struct RpcAppMsgIdsHash
     }
 };
 
-struct ForwardingEntry {
+struct PendingFetch
+{
     std::string host;
-    std::unordered_set<uint32_t> pendingRequestIds;
-    std::chrono::steady_clock::time_point expiresAt;
-};
-
-struct PendingFetch {
-    std::string host;
-    int port;
+    int port = 0;
 };
 
 class RpcContextRegistry
@@ -56,58 +56,56 @@ class RpcContextRegistry
     // -----------------------------------
 
     void registerContext(
-      int32_t appId, int32_t msgIdx, std::shared_ptr<RpcContext> ctx);
+      int32_t appId,
+      int32_t msgId,
+      std::shared_ptr<faabric::rpc::RpcContext> ctx);
 
-    std::shared_ptr<RpcContext> getContext(int32_t appId, int32_t msgId);
+    std::shared_ptr<faabric::rpc::RpcContext> getContext(
+      int32_t appId,
+      int32_t msgId);
 
-    void removeContext(int32_t appId, int32_t msgIdx);
+    void removeContext(int32_t appId, int32_t msgId);
 
-    std::shared_ptr<RpcContext> getContextForRequest(uint32_t requestId);
+    std::shared_ptr<faabric::rpc::RpcContext> getContextForRequest(
+      uint32_t requestId);
 
+    void clearAllRequestsForContext(int32_t appId, int32_t msgId);
 
-    void clearAllRequestsForContext(int32_t appId, int32_t msgIdx);
-    
     // -----------------------------------
-    // request ID mappings
+    // request ownership / validity
     // -----------------------------------
-    
+
     void registerInFlightRequest(
-      uint32_t requestId, int32_t appId, int32_t msgId);
+      uint32_t requestId,
+      int32_t appId,
+      int32_t msgId,
+      std::chrono::milliseconds ttl = kDefaultRpcRequestTtl);
+
+    void refreshRequestTtl(
+      uint32_t requestId,
+      std::chrono::milliseconds ttl);
+
+    bool hasRequest(uint32_t requestId);
 
     void clearRequest(uint32_t requestId);
 
     std::optional<RpcAppMsgIds> getAppMsgIdForRequest(uint32_t requestId);
 
     // -----------------------------------
-    // forwarding
+    // fetch-first response
     // -----------------------------------
 
-    void setForwardingAddress(
-      int32_t appId,
-      int32_t msgId,
-      std::string newHost,
-      std::unordered_set<uint32_t> pendingRequestIds,
-      std::chrono::milliseconds ttl = 30s);
+    void cacheResponse(
+      uint32_t requestId,
+      const faabric::RpcResponse& resp);
 
-    void markForwarded(int32_t appId, int32_t msgIdx, uint32_t requestId);
+    std::optional<faabric::RpcResponse> consumeCachedResponse(
+      uint32_t requestId);
 
-    std::optional<std::string> getForwardingAddress(
-      int32_t appId, int32_t msgIdx);
-    
-    // Cache response for migrated host to then fetch
-    void cacheForwardedResponse(uint32_t requestId,
-                                const faabric::RpcResponse& resp);
-
-    std::optional<faabric::RpcResponse> consumeForwardedResponse(
-        uint32_t requestId);
-
-    // -----------------------------------
-    // fetch
-    // -----------------------------------
-
-    void registerPendingFetch(uint32_t requestId,
-                              const std::string& host,
-                              int port);
+    void registerPendingFetch(
+      uint32_t requestId,
+      const std::string& host,
+      int port);
 
     std::optional<PendingFetch> consumePendingFetch(uint32_t requestId);
 
@@ -118,17 +116,25 @@ class RpcContextRegistry
     void reset();
 
   private:
+    struct InFlightRequest
+    {
+        RpcAppMsgIds owner;
+        std::chrono::steady_clock::time_point expiresAt;
+    };
+
+    bool expireRequestIfNeeded(uint32_t requestId);
+
+    void clearRequestLocked(uint32_t requestId);
+
     std::shared_mutex mx;
 
-    std::unordered_map<
-      RpcAppMsgIds, std::shared_ptr<RpcContext>, RpcAppMsgIdsHash> contextByKey;
+    std::unordered_map<RpcAppMsgIds,
+                       std::shared_ptr<faabric::rpc::RpcContext>,
+                       RpcAppMsgIdsHash> contextByKey;
 
-    std::unordered_map<uint32_t, RpcAppMsgIds> requestToContextKey;
+    std::unordered_map<uint32_t, InFlightRequest> requests;
 
-    std::unordered_map<
-      RpcAppMsgIds, ForwardingEntry, RpcAppMsgIdsHash> forwardingTable;
-
-    std::unordered_map<uint32_t, faabric::RpcResponse> forwardedResponseCache;
+    std::unordered_map<uint32_t, faabric::RpcResponse> cachedResponses;
 
     std::unordered_map<uint32_t, PendingFetch> pendingFetches;
 };

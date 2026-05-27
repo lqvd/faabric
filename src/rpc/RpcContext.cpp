@@ -7,6 +7,7 @@
 #include <faabric/rpc/RpcTracker.h>
 #include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/transport/common.h>
+#include <faabric/util/testing.h>
 #include <faabric/util/logging.h>
 #include <faabric/util/locks.h>
 
@@ -44,11 +45,11 @@ static int parseRpcPort(const std::string& uri)
              : std::stoi(rest.substr(colon + 1));
 }
 
-ChannelInfo parseChannelInfo(const std::string& targetUri)
+ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
 {
     if (!isFaabricUri(targetUri)) {
         throw std::runtime_error(
-            fmt::format("External RPC URIs not implemented: {}", targetUri));
+          fmt::format("External RPC URIs not implemented: {}", targetUri));
     }
 
     const std::string serviceName = targetUri.substr(kFaabricScheme.size());
@@ -56,11 +57,10 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
         throw std::runtime_error("Empty service name in faabric URI");
     }
 
-    auto endpoint = faabric::planner::getPlannerClient()
-        .resolveServiceEndpoint(serviceName);
+    auto endpoint = resolver->resolve(serviceName);
     if (!endpoint.has_value()) {
         throw std::runtime_error(
-            fmt::format("Service '{}' not found", serviceName));
+          fmt::format("Service '{}' not found", serviceName));
     }
 
     return ChannelInfo{
@@ -78,8 +78,28 @@ ChannelInfo parseChannelInfo(const std::string& targetUri)
 // -----------------------------------
 
 RpcContext::RpcContext(int32_t ownerAppIdIn, int32_t ownerMsgIdIn)
-  : ownerAppId(ownerAppIdIn) 
-  , ownerMsgId(ownerMsgIdIn) {}
+  : RpcContext(
+      ownerAppIdIn,
+      ownerMsgIdIn,
+      std::make_shared<PlannerRpcServiceResolver>())
+{}
+
+RpcContext::RpcContext(int32_t ownerAppIdIn,
+                       int32_t ownerMsgIdIn,
+                       std::shared_ptr<RpcServiceResolver> resolverIn)
+  : resolver(std::move(resolverIn))
+  , ownerAppId(ownerAppIdIn)
+  , ownerMsgId(ownerMsgIdIn)
+{
+    if (!faabric::util::isMockMode()) {
+        throw std::runtime_error(
+          "Custom RpcServiceResolver may only be used in mock mode");
+    }
+
+    if (!resolver) {
+        throw std::runtime_error("RpcContext requires non-null service resolver");
+    }
+}
 
 // Lock should be held.
 std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
@@ -353,11 +373,11 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 
         const auto& cfg = faabric::util::getSystemConfig();
         getRpcTracker().recordDependency(ownerAppId,
-                                        ownerMsgId,
-                                        targetAppId,
-                                        targetMessageId,
-                                        cfg.endpointHost,
-                                        targetHost);
+                                         ownerMsgId,
+                                         targetAppId,
+                                         targetMessageId,
+                                         cfg.endpointHost,
+                                         targetHost);
     } catch (...) {
         faabric::util::ScopedLock lock(mx);
         auto it = ops.find(requestId);
@@ -496,7 +516,7 @@ void RpcContext::setupForwarding(const std::string& newHost,
             }
 
             auto remaining = chrono::duration_cast<chrono::milliseconds>(
-                op.deadline.value() - now);
+              op.deadline.value() - now);
 
             maxRemaining = std::max(maxRemaining, remaining);
         }
@@ -509,14 +529,8 @@ void RpcContext::setupForwarding(const std::string& newHost,
 
     auto& reg = getRpcContextRegistry();
 
-    if (!pendingIds.empty()) {
-        SPDLOG_INFO("PENDING ID SET!");
-        reg.setForwardingAddress(
-          ownerAppId, 
-          ownerMsgId,
-          newHost,
-          std::move(pendingIds),
-          ttl);
+    for (uint32_t reqId : pendingIds) {
+        reg.refreshRequestTtl(reqId, ttl);
     }
 
     reg.removeContext(ownerAppId, ownerMsgId);

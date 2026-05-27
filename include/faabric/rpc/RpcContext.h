@@ -1,6 +1,7 @@
 #pragma once
 
 #include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcServiceResolver.h>
 #include <faabric/rpc/RpcTransportClient.h>
 
 #include <atomic>
@@ -38,6 +39,10 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
     RpcContext(int32_t ownerAppIdIn, int32_t ownerMsgIdIn);
+
+    RpcContext(int32_t ownerAppIdIn,
+               int32_t ownerMsgIdIn,
+               std::shared_ptr<RpcServiceResolver> resolverIn);
 
     ~RpcContext() = default;
 
@@ -89,6 +94,8 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
                             = kDefaultForwardingTtl);
 
   private:
+    std::shared_ptr<RpcServiceResolver> resolver;
+
     static std::atomic<uint32_t> nextRequestId;
     std::atomic<int32_t> nextChannelId{ 1 };
 
@@ -102,6 +109,8 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     std::unordered_map<uint32_t, RpcOp> ops;
     std::unordered_map<std::string, std::shared_ptr<RpcTransportClient>>
       targetToTransport;
+
+    ChannelInfo parseChannelInfo(const std::string& targetUri);
 
     void clearLocal();
 

@@ -6,6 +6,7 @@
 #include <faabric/rpc/RpcContext.h>
 #include <faabric/rpc/RpcContextRegistry.h>
 #include <faabric/rpc/RpcTransportClient.h>
+#include <faabric/rpc/RpcTracker.h>
 #include <faabric/rpc/RpcMessageType.h>
 #include <faabric/scheduler/Scheduler.h>
 #include <faabric/transport/common.h>
@@ -162,19 +163,37 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
     const uint32_t requestId = fetch.requestid();
     auto& registry = getRpcContextRegistry();
 
-    auto cached = registry.consumeForwardedResponse(requestId);
-    if (cached.has_value()) {
-        SPDLOG_INFO("RPC - FETCH for {} — response ready, sending to {}:{}",
+    if (!registry.hasRequest(requestId)) {
+        SPDLOG_WARN("RPC - FETCH for unknown/expired request {}; ignoring",
+                    requestId);
+        return;
+    }
+
+    auto cached = registry.consumeCachedResponse(requestId);
+    if (!cached.has_value()) {
+        SPDLOG_INFO("RPC - FETCH for {} arrived before response; registering {}:{}",
                     requestId, fetch.replyhost(), fetch.replyport());
+
+        registry.registerPendingFetch(
+          requestId, fetch.replyhost(), fetch.replyport());
+        return;
+    }
+
+    SPDLOG_INFO("RPC - FETCH for {} matched cached response; sending to {}:{}",
+                requestId,
+                fetch.replyhost(),
+                fetch.replyport());
+
+    try {
         RpcTransportClient client(fetch.replyhost(), fetch.replyport(),
                                   RPC_SYNC_PORT, kRpcTimeoutMs);
+
         client.asyncSendResponse(cached.value());
-    } else {
-        SPDLOG_INFO("RPC - FETCH for {} — not ready, registering",
-                    requestId);
-        registry.registerPendingFetch(requestId,
-                                      fetch.replyhost(),
-                                      fetch.replyport());
+        registry.clearRequest(requestId);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - Failed to send cached response {} to {}:{}: {}",
+                     requestId, fetch.replyhost(), fetch.replyport(), e.what());
+        registry.cacheResponse(requestId, cached.value());
     }
 }
 
@@ -196,52 +215,48 @@ void RpcServer::recvShutdown(std::span<const uint8_t> buffer)
 // response delivery
 // -----------------------------------
 
-void RpcServer::deliverResponse(const faabric::RpcResponse& msg)
+void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
 {
-    const uint32_t requestId = msg.requestid();
+    const uint32_t requestId = resp.requestid();
     auto& registry = getRpcContextRegistry();
 
-    // Local delivery, route directly to context
     if (auto ctx = registry.getContextForRequest(requestId)) {
         SPDLOG_INFO("RPC - Delivering response {} to local context", requestId);
-        ctx->onResponseReceived(msg);
+        ctx->onResponseReceived(resp);
         return;
     }
 
-    // Remote, lookup forwarding address
-    auto key = registry.getAppMsgIdForRequest(requestId);
-    if (!key.has_value()) {
-        SPDLOG_WARN("RPC - Response {} undeliverable; dropping", requestId);
-        return;
-    }
-
-    auto destHost =
-    registry.getForwardingAddress(key->appId, key->msgId);
-
-    if (!destHost.has_value()) {
-        SPDLOG_WARN("RPC - No forwarding address for response {}; dropping",
+    if (!registry.hasRequest(requestId)) {
+        SPDLOG_WARN("RPC - Response {} undeliverable; unknown/expired request",
                     requestId);
         return;
     }
 
-    // Check if target already sent a FETCH
     auto pendingFetch = registry.consumePendingFetch(requestId);
-    const std::string& host = pendingFetch.has_value() ? pendingFetch->host : destHost.value();
-    const int port = pendingFetch.has_value() ? pendingFetch->port : RPC_ASYNC_PORT;
-
     if (!pendingFetch.has_value()) {
-        registry.cacheForwardedResponse(requestId, msg);
+        SPDLOG_INFO("RPC - Response {} arrived before FETCH; caching", requestId);
+        registry.cacheResponse(requestId, resp);
+        return;
     }
 
-    SPDLOG_INFO("RPC - Forwarding response {} to {}:{}", requestId, host, port);
+    SPDLOG_INFO("RPC - Response {} matched FETCH; sending to {}:{}",
+                requestId,
+                pendingFetch->host,
+                pendingFetch->port);
+
     try {
-        RpcTransportClient client(host, port, RPC_SYNC_PORT, kRpcTimeoutMs);
-        client.asyncSendResponse(msg);
-        registry.markForwarded(key->appId, key->msgId, requestId);
+        RpcTransportClient client(
+          pendingFetch->host, pendingFetch->port, RPC_SYNC_PORT, kRpcTimeoutMs);
+        client.asyncSendResponse(resp);
         registry.clearRequest(requestId);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("RPC - Failed to forward response {} to {}:{}: {}",
-                     requestId, host, port, e.what());
+        SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
+                     requestId,
+                     pendingFetch->host,
+                     pendingFetch->port,
+                     e.what());
+
+        registry.cacheResponse(requestId, resp);
     }
 }
 
