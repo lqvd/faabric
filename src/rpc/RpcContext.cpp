@@ -36,15 +36,6 @@ static bool isFaabricUri(const std::string& uri)
     return uri.rfind(kFaabricScheme, 0) == 0;
 }
 
-static int parseRpcPort(const std::string& uri)
-{
-    std::string rest = uri.substr(kFaabricScheme.size());
-    auto colon = rest.rfind(':');
-    return colon == std::string::npos
-             ? RPC_ASYNC_PORT
-             : std::stoi(rest.substr(colon + 1));
-}
-
 ChannelInfo RpcContext::parseChannelInfo(const std::string& targetUri)
 {
     if (!isFaabricUri(targetUri)) {
@@ -91,11 +82,6 @@ RpcContext::RpcContext(int32_t ownerAppIdIn,
   , ownerAppId(ownerAppIdIn)
   , ownerMsgId(ownerMsgIdIn)
 {
-    if (!faabric::util::isMockMode()) {
-        throw std::runtime_error(
-          "Custom RpcServiceResolver may only be used in mock mode");
-    }
-
     if (!resolver) {
         throw std::runtime_error("RpcContext requires non-null service resolver");
     }
