@@ -2,8 +2,6 @@
 #define FAABRIC_RPC_H
 
 #include <cstdint>
-#include <string>
-#include <vector>
 
 #ifdef __cplusplus
 extern "C"
@@ -31,26 +29,29 @@ enum Rpc_StatusCode : int
     UNAUTHENTICATED     = 16,
 };
 
-int Rpc_ChannelCreate(const char* targetUri, int32_t* outChannelId);
+int32_t __faasm_rpc_channel_create(const char* targetUri,
+                                   int32_t* outChannelId);
 
-int Rpc_ChannelClose(int32_t channelId);
+int32_t __faasm_rpc_channel_close(int32_t channelId);
 
-int32_t __faasm_rpc_unary_start(int32_t channelId, 
-                                const char* method, 
-                                const uint8_t* reqBuf, 
-                                int32_t reqLen, 
-                                int32_t* outRequestId,
+int32_t __faasm_rpc_unary_start(int32_t channelId,
+                                const char* method,
+                                const uint8_t* reqBuf,
+                                int32_t reqLen,
+                                uint32_t* outRequestId,
                                 int32_t timeoutMs);
 
-int32_t __faasm_rpc_test_response(int32_t requestId);
+int32_t __faasm_rpc_test_response(uint32_t requestId);
 
-void __faasm_rpc_wait_migratable(int32_t requestId,
-                                 int32_t wasmResumeTarget,
-                                 int32_t frameOffset);
+int32_t __faasm_rpc_wait_migratable(uint32_t requestId,
+                                    int32_t wasmResumeTarget,
+                                    int32_t frameOffset);
 
-int32_t __faasm_rpc_get_response(int32_t requestId,
-                                 int32_t* outRespOffset, 
-                                 int32_t* outRespLen);
+int32_t __faasm_rpc_get_response(uint32_t requestId,
+                                 int32_t* outRespBufOffset,
+                                 int32_t* outRespLen,
+                                 int32_t* outErrorMsgOffset,
+                                 int32_t* outErrorMsgLen);
 
 int32_t __faasm_rpc_send_response(uint32_t requestId,
                                   const char* replyHost,
@@ -63,15 +64,17 @@ int32_t __faasm_rpc_send_response(uint32_t requestId,
 
 int32_t __faasm_rpc_get_request(int32_t wasmResumeTarget,
                                 int32_t frameOffset,
-                                uint32_t* outRequestIdPtr,
-                                int32_t* outMethodOffsetPtr,
-                                int32_t* outMethodLenPtr,
-                                int32_t* outPayloadOffsetPtr,
-                                int32_t* outPayloadLenPtr,
-                                int32_t* outReplyHostOffsetPtr,
-                                int32_t* outReplyHostLenPtr,
-                                int32_t* outReplyPortPtr);
+                                uint32_t* outRequestId,
+                                int32_t* outMethodOffset,
+                                int32_t* outMethodLen,
+                                int32_t* outPayloadOffset,
+                                int32_t* outPayloadLen,
+                                int32_t* outReplyHostOffset,
+                                int32_t* outReplyHostLen,
+                                int32_t* outReplyPort);
 
-} // namespace faabric::rpc
+#ifdef __cplusplus
+}
+#endif
 
 #endif
