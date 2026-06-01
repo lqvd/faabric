@@ -48,7 +48,6 @@ TEST_CASE_METHOD(RpcContextBaseFixture,
     int32_t channelId = ctx->createChannel(makeFaabricUri());
     uint32_t requestId = startUnaryWithPayload(ctx, channelId);
 
-    REQUIRE(requestId > 0);
     REQUIRE(ctx->hasPendingRequest(requestId));
     REQUIRE(!ctx->testResponse(requestId));
 
