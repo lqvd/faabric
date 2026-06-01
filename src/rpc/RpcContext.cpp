@@ -25,8 +25,6 @@ namespace faabric::rpc {
 static constexpr int32_t kNoCachedRespStatus = -1;
 static constexpr std::string_view kFaabricScheme = "faabric://";
 
-std::atomic<uint32_t> RpcContext::nextRequestId{1};
-
 // -----------------------------------
 // helpers
 // -----------------------------------
@@ -73,7 +71,15 @@ RpcContext::RpcContext(int32_t ownerAppIdIn, int32_t ownerMsgIdIn)
       ownerAppIdIn,
       ownerMsgIdIn,
       std::make_shared<PlannerRpcServiceResolver>())
-{}
+{
+    // NOTE: nextRequestId is 32-bit so we only permit 65535 requests
+    // concurrently. 
+    uint32_t ownerHash = static_cast<uint32_t>(
+      std::hash<int64_t>{}((static_cast<int64_t>(ownerAppIdIn) << 32) |
+                            static_cast<int64_t>(ownerMsgIdIn)));
+    uint32_t seed = (ownerHash & 0xFFFFu) << 16;
+    nextRequestId.store(seed | 1u, std::memory_order_relaxed);
+}
 
 RpcContext::RpcContext(int32_t ownerAppIdIn,
                        int32_t ownerMsgIdIn,

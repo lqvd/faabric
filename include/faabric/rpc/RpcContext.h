@@ -96,7 +96,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
   private:
     std::shared_ptr<RpcServiceResolver> resolver;
 
-    static std::atomic<uint32_t> nextRequestId;
+    std::atomic<uint32_t> nextRequestId;
     std::atomic<int32_t> nextChannelId{ 1 };
 
     const int32_t ownerAppId;
