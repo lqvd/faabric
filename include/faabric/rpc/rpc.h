@@ -36,7 +36,7 @@ int32_t __faasm_rpc_channel_close(int32_t channelId);
 
 int32_t __faasm_rpc_unary_start(int32_t channelId,
                                 const char* method,
-                                const uint8_t* reqBuf,
+                                const uint8_t* request,
                                 int32_t reqLen,
                                 uint32_t* outRequestId,
                                 int32_t timeoutMs);
