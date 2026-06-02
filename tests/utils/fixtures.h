@@ -757,7 +757,6 @@ class RpcSchedulingTestFixture
       const std::string& expectedPayload = {})
     {
         REQUIRE(actual != nullptr);
-        REQUIRE(actual->type() == faabric::BatchExecuteRequest::SERVICE);
         REQUIRE(actual->messages_size() == 1);
 
         const auto& msg = actual->messages(0);

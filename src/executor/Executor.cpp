@@ -623,8 +623,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 setThreadResult(msg, returnValue, "", {});
             }
         } else {
-            if (task.req->type() == faabric::BatchExecuteRequest::SERVICE ||
-                msg.islongrunning()) {
+            if (msg.isrpc() && msg.islongrunning()) {
                 faabric::rpc::getRpcServer().unregisterServiceInstance(
                   msg.appid(),
                   msg.id());

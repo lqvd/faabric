@@ -109,7 +109,6 @@ TEST_CASE_METHOD(ServiceSchedulerTelemetryFixture,
      * returns false and the scheduler falls back to bin-pack.
      */
     auto oldReq = std::make_shared<faabric::BatchExecuteRequest>(*ber);
-    oldReq->set_type(faabric::BatchExecuteRequest::SERVICE);
     markAsRpcLongRunning(*oldReq);
 
     auto inFlightReqs = buildInFlightReqs(

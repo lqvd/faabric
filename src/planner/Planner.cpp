@@ -1427,7 +1427,12 @@ std::optional<ServiceEndpoint> Planner::discoverService(
         const auto& req = inFlightPair.first;
         const auto& decision = inFlightPair.second;
 
-        if (req->type() != faabric::BatchExecuteRequest::SERVICE) {
+        if (req->messages_size() == 0) {
+            continue;
+        }
+
+        const auto& firstMsg = req->messages(0);
+        if (!firstMsg.isrpc() || !firstMsg.islongrunning()) {
             continue;
         }
 
