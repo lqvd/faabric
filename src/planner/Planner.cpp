@@ -1415,83 +1415,71 @@ void Planner::setNextEvictedVm(const std::set<std::string>& vmIps)
     state.nextEvictedHostIps = vmIps;
 }
 
+
+void Planner::notifyServiceReady(const std::string& serviceName,
+                                  const std::string& host,
+                                  int32_t appId,
+                                  int32_t messageId)
+{
+    faabric::util::FullLock lock(plannerMx);
+
+    ServiceEndpoint endpoint;
+    endpoint.set_servicename(serviceName);
+    endpoint.set_host(host);
+    endpoint.set_appid(appId);
+    endpoint.set_messageid(messageId);
+
+    state.readyServices[serviceName].push_back(endpoint);
+
+    SPDLOG_INFO("Planner - service {} ready at {}:{}/{}",
+                serviceName, host, appId, messageId);
+}
+
+void Planner::notifyServiceStopped(const std::string& serviceName,
+                                    int32_t appId,
+                                    int32_t messageId)
+{
+    faabric::util::FullLock lock(plannerMx);
+
+    auto it = state.readyServices.find(serviceName);
+    if (it == state.readyServices.end()) return;
+
+    auto& endpoints = it->second;
+    endpoints.erase(
+        std::remove_if(endpoints.begin(), endpoints.end(),
+            [&](const ServiceEndpoint& e) {
+                return e.appid() == appId && e.messageid() == messageId;
+            }),
+        endpoints.end());
+
+    if (endpoints.empty()) {
+        state.readyServices.erase(it);
+    }
+}
+
 std::optional<ServiceEndpoint> Planner::discoverService(
   const std::string& serviceName,
   const std::string& callerHost)
 {
     faabric::util::FullLock lock(plannerMx);
 
-    std::vector<ServiceEndpoint> endpoints;
-
-    for (const auto& [appId, inFlightPair] : state.inFlightReqs) {
-        const auto& req = inFlightPair.first;
-        const auto& decision = inFlightPair.second;
-
-        if (req->messages_size() == 0) {
-            continue;
-        }
-
-        const auto& firstMsg = req->messages(0);
-        if (!firstMsg.isrpc() || !firstMsg.islongrunning()) {
-            continue;
-        }
-
-        assert(req->messages_size() == decision->hosts.size());
-
-        for (int i = 0; i < req->messages_size(); i++) {
-            const auto& msg = req->messages(i);
-
-            const std::string thisService =
-              msg.user() + "/" + msg.function();
-
-            if (thisService != serviceName) {
-                continue;
-            }
-
-            const auto& host = decision->hosts.at(i);
-            if (!state.hostMap.contains(host)) {
-                SPDLOG_WARN("Ignoring service {} on unavailable host {}",
-                            serviceName,
-                            host);
-                continue;
-            }
-
-            ServiceEndpoint endpoint;
-            endpoint.set_servicename(serviceName);
-            endpoint.set_host(host);
-            endpoint.set_appid(appId);
-            endpoint.set_groupid(req->groupid());
-            endpoint.set_messageid(msg.id());
-            endpoint.set_groupidx(msg.groupidx());
-
-            endpoints.push_back(endpoint);
-        }
-    }
-
-    if (endpoints.empty()) {
+    auto it = state.readyServices.find(serviceName);
+    if (it == state.readyServices.end() || it->second.empty()) {
         return std::nullopt;
     }
 
-    std::sort(endpoints.begin(), endpoints.end(),
-          [](const ServiceEndpoint& a, const ServiceEndpoint& b) {
-              return std::make_tuple(a.host(), a.appid(), a.messageid()) <
-                     std::make_tuple(b.host(), b.appid(), b.messageid());
-          });
+    const auto& endpoints = it->second;
 
+    // Prefer local endpoints
     if (!callerHost.empty()) {
-        std::vector<ServiceEndpoint> localEndpoints;
-        for (const auto& endpoint : endpoints) {
-            if (endpoint.host() == callerHost) {
-                localEndpoints.push_back(endpoint);
-            }
+        std::vector<ServiceEndpoint> local;
+        for (const auto& e : endpoints) {
+            if (e.host() == callerHost) local.push_back(e);
         }
-
-        if (!localEndpoints.empty()) {
-            size_t idx =
-              state.serviceRrCounter[serviceName + "@local"]++ %
-              localEndpoints.size();
-
-            return localEndpoints.at(idx);
+        if (!local.empty()) {
+            size_t idx = state.serviceRrCounter[serviceName + "@local"]++
+                         % local.size();
+            return local.at(idx);
         }
     }
 

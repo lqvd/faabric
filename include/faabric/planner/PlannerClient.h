@@ -114,6 +114,14 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
     // Service management
     // ------
 
+    void notifyServiceReady(const std::string& serviceName,
+                            int32_t appId,
+                            int32_t messageId);
+
+    void notifyServiceStopped(const std::string& serviceName,
+                              int32_t appId,
+                              int32_t messageId);
+
     std::optional<ServiceEndpoint> resolveServiceEndpoint(
       const std::string& serviceName);
 

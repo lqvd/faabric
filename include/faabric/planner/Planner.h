@@ -107,6 +107,15 @@ class Planner
     // ----------
     // API for RPC management
     // ----------
+    void notifyServiceReady(const std::string& serviceName,
+                            const std::string& host,
+                            int32_t appId,
+                            int32_t messageId);
+
+    void notifyServiceStopped(const std::string& serviceName,
+                              int32_t appId,
+                              int32_t messageId);
+
     std::optional<ServiceEndpoint> discoverService(
       const std::string& serviceName,
       const std::string& callerHost = "");

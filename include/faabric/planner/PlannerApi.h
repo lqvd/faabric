@@ -21,6 +21,8 @@ enum PlannerCalls
     // Service discovery calls
     DiscoverService = 15,
     // RPC telemetry
-    ReportRpcDependencies = 16,
+    NotifyServiceReady = 16,
+    NotifyServiceStopped = 17,
+    ReportRpcDependencies = 18,
 };
 }

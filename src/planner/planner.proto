@@ -167,6 +167,13 @@ message ServiceEndpoint {
     int32 groupIdx = 6;
 }
 
+message ServiceReadyNotification {
+  string serviceName = 1;
+  string host = 2;
+  int32 appId = 3;
+  int32 messageId = 4;
+}
+
 message DiscoverServiceRequest {
     string serviceName = 1;
     string callerHost = 2;

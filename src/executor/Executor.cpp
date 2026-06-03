@@ -624,6 +624,11 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
             }
         } else {
             if (msg.isrpc() && msg.islongrunning()) {
+                faabric::planner::getPlannerClient().notifyServiceStopped(
+                    msg.rpcservice(),
+                    msg.appid(),
+                    msg.id());
+                    
                 faabric::rpc::getRpcServer().unregisterServiceInstance(
                   msg.appid(),
                   msg.id());

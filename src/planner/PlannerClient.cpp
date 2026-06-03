@@ -444,6 +444,29 @@ void PlannerClient::preloadSchedulingDecision(
 // Service management
 // -----------------------------------
 
+void PlannerClient::notifyServiceReady(const std::string& serviceName,
+                                        int32_t appId,
+                                        int32_t messageId)
+{
+    ServiceReadyNotification req;
+    req.set_servicename(serviceName);
+    req.set_appid(appId);
+    req.set_messageid(messageId);
+    req.set_host(faabric::util::getSystemConfig().endpointHost);
+    asyncSend(PlannerCalls::NotifyServiceReady, &req);
+}
+
+void PlannerClient::notifyServiceStopped(const std::string& serviceName,
+                                          int32_t appId,
+                                          int32_t messageId)
+{
+    ServiceReadyNotification req;
+    req.set_servicename(serviceName);
+    req.set_appid(appId);
+    req.set_messageid(messageId);
+    asyncSend(PlannerCalls::NotifyServiceStopped, &req);
+}
+
 std::optional<ServiceEndpoint> PlannerClient::resolveServiceEndpoint(
   const std::string& serviceName)
 {

@@ -325,6 +325,11 @@ void Scheduler::executeBatch(std::shared_ptr<faabric::BatchExecuteRequest> req)
                 faabric::rpc::getRpcServer().registerServiceInstance(
                     localMsg.appid(),
                     localMsg.id());
+
+                faabric::planner::getPlannerClient().notifyServiceReady(
+                    localMsg.rpcservice(),
+                    localMsg.appid(),
+                    localMsg.id());
             }
 
             exec->executeTasks({ i }, req);
@@ -337,6 +342,11 @@ void Scheduler::executeBatch(std::shared_ptr<faabric::BatchExecuteRequest> req)
                 localMsg.id());
 
             if (localMsg.isrpc() && localMsg.islongrunning()) {
+                faabric::planner::getPlannerClient().notifyServiceStopped(
+                    localMsg.rpcservice(),
+                    localMsg.appid(),
+                    localMsg.id());
+
                 faabric::rpc::getRpcServer().unregisterServiceInstance(
                     localMsg.appid(),
                     localMsg.id());
@@ -480,10 +490,10 @@ Scheduler::checkForMigrationOpportunities(faabric::Message& msg,
     int groupId = msg.groupid();
     int groupIdx = msg.groupidx();
 
-    SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
-                 appId,
-                 groupId,
-                 groupIdx);
+    // SPDLOG_DEBUG("Message {}:{}:{} checking for migration opportunities",
+    //              appId,
+    //              groupId,
+    //              groupIdx);
 
     // TODO: maybe we could move this into a broker-specific function?
     int newGroupId = 0;

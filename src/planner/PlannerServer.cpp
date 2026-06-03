@@ -32,6 +32,14 @@ void PlannerServer::doAsyncRecv(transport::Message& message)
             recvReportRpcDependencies(message.udata());
             break;
         }
+        case PlannerCalls::NotifyServiceReady: {
+            recvNotifyServiceReady(message.udata());
+            break;
+        }
+        case PlannerCalls::NotifyServiceStopped: {
+            recvNotifyServiceStopped(message.udata());
+            break;
+        }
         default: {
             // If we don't recognise the header, let the client fail, but don't
             // crash the planner
@@ -160,6 +168,23 @@ void PlannerServer::recvReportRpcDependencies(std::span<const uint8_t> buffer)
     SPDLOG_TRACE("Planner received RPC telemetry batch with {} edges",
                  parsedMsg.edges_size());
     faabric::rpc::getRpcDependencyGraph().mergeTelemetry(parsedMsg);
+}
+
+void PlannerServer::recvNotifyServiceReady(std::span<const uint8_t> buffer)
+{
+    PARSE_MSG(ServiceReadyNotification, buffer.data(), buffer.size());
+    planner.notifyServiceReady(parsedMsg.servicename(),
+                               parsedMsg.host(),
+                               parsedMsg.appid(),
+                               parsedMsg.messageid());
+}
+
+void PlannerServer::recvNotifyServiceStopped(std::span<const uint8_t> buffer)
+{
+    PARSE_MSG(ServiceReadyNotification, buffer.data(), buffer.size());
+    planner.notifyServiceStopped(parsedMsg.servicename(),
+                                 parsedMsg.appid(),
+                                 parsedMsg.messageid());
 }
 
 std::unique_ptr<google::protobuf::Message> PlannerServer::recvGetMessageResult(

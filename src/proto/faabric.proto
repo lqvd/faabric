@@ -158,7 +158,7 @@ message Message {
     uint32 rpcRequestId = 43;
     string rpcReplyHost = 44;
     int32 rpcReplyPort = 45;
-    bool isLongRunning = 46 [json_name = "long_running"];
+    bool isLongRunning = 46 [json_name = "is_long_running"];
 }
 
 // ---------------------------------------------
@@ -287,10 +287,15 @@ message RpcRequest {
 }
 
 message RpcResponse {
-  int32 statusCode = 1;
-  bytes payload = 2;
-  uint32 requestId = 3;
-  string errorMessage = 4;
+    int32 statusCode = 1;
+    bytes payload = 2;
+    uint32 requestId = 3;
+    string errorMessage = 4;
+
+    int32 targetAppId = 5;
+    int32 targetMessageId = 6;
+    int32 targetGroupId = 7;
+    int32 targetGroupIdx = 8;
 }
 
 message RpcFetchRequest {

@@ -59,6 +59,8 @@ struct PlannerState
     // -----
     // Data structures used for service management
     // -----
+    std::map<std::string, std::vector<ServiceEndpoint>> readyServices;
+    
     std::map<std::string, size_t> serviceRrCounter;
 };
 }
