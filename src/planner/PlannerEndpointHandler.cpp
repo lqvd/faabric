@@ -418,8 +418,9 @@ void PlannerEndpointHandler::onRequest(
             try {
                 faabric::util::jsonToMessage(msg.payloadjson(), &req);
             } catch (faabric::util::JsonSerialisationException e) {
+                SPDLOG_ERROR("Failed parsing payload: {}", e.what());
                 response.result(beast::http::status::bad_request);
-                response.body() = std::string("Bad JSON in request body");
+                response.body() = std::string("Bad JSON: ") + e.what();
                 return ctx.sendFunction(std::move(response));
             }
 
