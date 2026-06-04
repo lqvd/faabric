@@ -411,6 +411,34 @@ void PlannerEndpointHandler::onRequest(
 
             return ctx.sendFunction(std::move(response));
         }
+        case faabric::planner::HttpMessage_Type_DISCOVER_SERVICE: {
+            SPDLOG_DEBUG("Planner received DISCOVER_SERVICE request");
+
+            DiscoverServiceRequest req;
+            try {
+                faabric::util::jsonToMessage(msg.payloadjson(), &req);
+            } catch (faabric::util::JsonSerialisationException e) {
+                response.result(beast::http::status::bad_request);
+                response.body() = std::string("Bad JSON in request body");
+                return ctx.sendFunction(std::move(response));
+            }
+
+            auto endpoint = faabric::planner::getPlanner().discoverService(
+                req.servicename(), req.callerhost()
+            );
+
+            DiscoverServiceResponse resp;
+            if (endpoint.has_value()) {
+                resp.set_found(true);
+                *resp.mutable_endpoint() = endpoint.value();
+            } else {
+                resp.set_found(false);
+            }
+
+            response.result(beast::http::status::ok);
+            response.body() = faabric::util::messageToJson(resp);
+            return ctx.sendFunction(std::move(response));
+        }
         default: {
             SPDLOG_ERROR("Unrecognised message type {}", msg.type());
             response.result(beast::http::status::bad_request);

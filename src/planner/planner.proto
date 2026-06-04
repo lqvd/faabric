@@ -51,6 +51,7 @@ message HttpMessage {
         // deployment we would get this value from a cloud-provider-specific
         // API
         SET_NEXT_EVICTED_VM = 15;
+        DISCOVER_SERVICE = 16;
     }
 
     Type type = 1 [json_name = "http_type"];
