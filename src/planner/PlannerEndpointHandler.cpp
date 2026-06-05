@@ -1,4 +1,5 @@
 #include <faabric/endpoint/FaabricEndpoint.h>
+#include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/planner/Planner.h>
 #include <faabric/planner/PlannerEndpointHandler.h>
 #include <faabric/planner/planner.pb.h>
