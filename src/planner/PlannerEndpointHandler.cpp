@@ -440,6 +440,30 @@ void PlannerEndpointHandler::onRequest(
             response.body() = faabric::util::messageToJson(resp);
             return ctx.sendFunction(std::move(response));
         }
+        case faabric::planner::HttpMessage_Type_SHUTDOWN_SERVICE: {
+            SPDLOG_DEBUG("Planner received SHUTDOWN_SERVICE request");
+
+            DiscoverServiceRequest req;
+            faabric::util::jsonToMessage(msg.payloadjson(), &req);
+
+            auto endpoint = getPlanner().discoverService(req.servicename());
+            if (!endpoint.has_value()) {
+                response.result(beast::http::status::not_found);
+                response.body() = "Service not found";
+                return ctx.sendFunction(std::move(response));
+            }
+
+            faabric::rpc::RpcTransportClient ctrl(
+                endpoint->host(), RPC_ASYNC_PORT, RPC_SYNC_PORT, 5000);
+            faabric::RpcShutdownRequest shutdownReq;
+            shutdownReq.set_targetappid(endpoint->appid());
+            shutdownReq.set_targetmessageid(endpoint->messageid());
+            ctrl.asyncSendShutdown(shutdownReq);
+
+            response.result(beast::http::status::ok);
+            response.body() = "Shutdown sent";
+            return ctx.sendFunction(std::move(response));
+        }
         default: {
             SPDLOG_ERROR("Unrecognised message type {}", msg.type());
             response.result(beast::http::status::bad_request);

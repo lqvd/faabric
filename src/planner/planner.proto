@@ -52,6 +52,7 @@ message HttpMessage {
         // API
         SET_NEXT_EVICTED_VM = 15;
         DISCOVER_SERVICE = 16;
+        SHUTDOWN_SERVICE = 17;
     }
 
     Type type = 1 [json_name = "http_type"];
