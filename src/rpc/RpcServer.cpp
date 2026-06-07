@@ -440,7 +440,7 @@ std::optional<PendingInvocation> RpcServer::tryDequeueInvocation(
     }
 
     try {
-        return queue->dequeue(1);
+        return queue->dequeue(5000);
     } catch (const faabric::util::QueueTimeoutException&) {
         return std::nullopt;
     }
@@ -601,7 +601,7 @@ void RpcServer::migrateServiceQueue(int32_t appId,
     if (queue != nullptr) {
         while (true) {
             try {
-                drained.emplace_back(queue->dequeue(1));
+                drained.emplace_back(queue->dequeue(5000));
             } catch (const faabric::util::QueueTimeoutException&) {
                 break;
             }
