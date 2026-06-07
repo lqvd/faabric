@@ -601,7 +601,7 @@ void RpcServer::migrateServiceQueue(int32_t appId,
     if (queue != nullptr) {
         while (true) {
             try {
-                drained.emplace_back(queue->dequeue(0));
+                drained.emplace_back(queue->dequeue(1));
             } catch (const faabric::util::QueueTimeoutException&) {
                 break;
             }
