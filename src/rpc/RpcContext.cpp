@@ -196,7 +196,7 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
                 op.deadline.value() - now)
                 .count();
 
-            pendingReq->set_timeoutremaining(std::max<int64_t>(0, remaining));
+            pendingReq->set_timeoutremaining(std::max<int64_t>(1, remaining));
         } else {
             pendingReq->set_timeoutremaining(-1);
         }
