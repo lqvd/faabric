@@ -2,6 +2,7 @@
 #include <faabric/batch-scheduler/SchedulingDecision.h>
 #include <faabric/planner/Planner.h>
 #include <faabric/proto/faabric.pb.h>
+#include <faabric/rpc/RpcDependencyGraph.h>
 #include <faabric/scheduler/FunctionCallClient.h>
 #include <faabric/snapshot/SnapshotClient.h>
 #include <faabric/transport/PointToPointBroker.h>
@@ -1431,6 +1432,8 @@ void Planner::notifyServiceReady(const std::string& serviceName,
 
     state.readyServices[serviceName].push_back(endpoint);
 
+    faabric::rpc::getRpcDependencyGraph().setPlacement({appId, messageId}, host);
+
     SPDLOG_INFO("Planner - service {} ready at {}:{}/{}",
                 serviceName, host, appId, messageId);
 }
@@ -1455,6 +1458,8 @@ void Planner::notifyServiceStopped(const std::string& serviceName,
     if (endpoints.empty()) {
         state.readyServices.erase(it);
     }
+
+    faabric::rpc::getRpcDependencyGraph().removePlacement({appId, messageId});
 }
 
 std::optional<ServiceEndpoint> Planner::discoverService(
