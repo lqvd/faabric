@@ -159,6 +159,9 @@ message Message {
     string rpcReplyHost = 44;
     int32 rpcReplyPort = 45;
     bool isLongRunning = 46 [json_name = "is_long_running"];
+
+    // Binary function output for arbitrary non-UTF8 data.
+    bytes outputDataBytes = 47 [json_name = "output_data_bytes"];
 }
 
 // ---------------------------------------------
