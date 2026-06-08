@@ -21,7 +21,7 @@ static std::map<std::string, int> getHostFreqCount(
 // force a migration; otherwise we decline. This makes the policy periodic
 // and deterministic, which is what a correctness experiment wants.
 static std::atomic<int> distChangeCounter{ 0 };
-static constexpr int migrateEveryNChecks = 1; // force on every check
+static constexpr int migrateEveryNChecks = 10; // force on every check
 
 // For the forced scheduler "better" is not meaningful: we always migrate
 // when asked to. This method should not be relied upon.
