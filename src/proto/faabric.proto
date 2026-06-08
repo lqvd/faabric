@@ -307,6 +307,15 @@ message RpcFetchRequest {
     int32 replyPort = 3;
 }
 
+message RpcInvocationFetchRequest {
+    int32 targetAppId = 1;
+    int32 targetMessageId = 2;
+
+    // The restored/new host.
+    string replyHost = 3;
+    int32 replyPort = 4;
+}
+
 message RpcShutdownRequest {
     int32 targetAppId = 1;
     int32 targetMessageId = 2;

@@ -108,6 +108,7 @@ std::shared_ptr<RpcTransportClient> RpcContext::getOrCreateTransportLocked(
     targetToTransport.emplace(key, transport);
     return transport;
 }
+
 int32_t RpcContext::createChannel(const std::string& targetUri)
 {
     ChannelInfo info = parseChannelInfo(targetUri);
@@ -299,7 +300,6 @@ void RpcContext::deserializeMigrationState(
 // rpc unary request
 // -----------------------------------
 
-// Start an unary request and register into context.
 uint32_t RpcContext::startUnary(int32_t channelId,
                                 const std::string& method,
                                 const uint8_t* reqBuffer,
@@ -311,6 +311,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     int32_t targetAppId = 0;
     int32_t targetMessageId = 0;
     std::string targetHost;
+    std::string targetUri;
 
     {
         faabric::util::ScopedLock lock(mx);
@@ -332,6 +333,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         targetAppId = info.targetAppId;
         targetMessageId = info.targetMessageId;
         targetHost = info.targetHost;
+        targetUri = info.targetUri;
 
         requestId = nextRequestId.fetch_add(1, std::memory_order_relaxed);
 
@@ -351,37 +353,76 @@ uint32_t RpcContext::startUnary(int32_t channelId,
 
     const auto& cfg = faabric::util::getSystemConfig();
 
-    faabric::RpcRequest req;
-    req.set_requestid(requestId);
-    req.set_method(method);
-    req.set_payload(reqBuffer, reqLength);
-    req.set_targetappid(targetAppId);
-    req.set_targetmessageid(targetMessageId);
-    req.set_replyhost(cfg.endpointHost);
-    req.set_replyport(RPC_ASYNC_PORT);
+    auto buildReq = [&](int32_t appId, int32_t msgId) {
+        faabric::RpcRequest req;
+        req.set_requestid(requestId);
+        req.set_method(method);
+        req.set_payload(reqBuffer, reqLength);
+        req.set_targetappid(appId);
+        req.set_targetmessageid(msgId);
+        req.set_replyhost(cfg.endpointHost);
+        req.set_replyport(RPC_ASYNC_PORT);
+        return req;
+    };
 
+    // First attempt against the channel's cached resolution.
     try {
-        transport->asyncSendRequest(requestId, req);
+        transport->asyncSendRequest(requestId, buildReq(targetAppId,
+                                                        targetMessageId));
+        getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
+                                         targetAppId, targetMessageId,
+                                         cfg.endpointHost, targetHost);
+        return requestId;
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("RPC - send for req={} to {} failed ({}); re-resolving {}",
+                    requestId, targetHost, e.what(), targetUri);
+    }
 
-        const auto& cfg = faabric::util::getSystemConfig();
-        getRpcTracker().recordDependency(ownerAppId,
-                                         ownerMsgId,
-                                         targetAppId,
-                                         targetMessageId,
-                                         cfg.endpointHost,
-                                         targetHost);
-    } catch (...) {
+    // Send failed: the cached endpoint is likely stale (callee migrated and
+    // the origin tombstone has expired). Re-resolve through the planner,
+    // which always holds the current location, retarget the channel, and
+    // retry once against the fresh endpoint.
+    try {
+        auto endpoint = reresolveChannel(channelId, targetUri);
+        if (!endpoint.has_value()) {
+            throw std::runtime_error(
+              fmt::format("Re-resolution found no endpoint for {}", targetUri));
+        }
+
+        std::shared_ptr<RpcTransportClient> freshTransport;
+        int32_t newAppId = endpoint->appid();
+        int32_t newMsgId = endpoint->messageid();
+        std::string newHost = endpoint->host();
+        {
+            faabric::util::ScopedLock lock(mx);
+            auto chIt = channels.find(channelId);
+            if (chIt == channels.end()) {
+                throw std::runtime_error("Channel disappeared during re-resolve");
+            }
+            freshTransport = getOrCreateTransportLocked(chIt->second);
+        }
+
+        freshTransport->asyncSendRequest(requestId, buildReq(newAppId, newMsgId));
+        getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
+                                         newAppId, newMsgId,
+                                         cfg.endpointHost, newHost);
+        SPDLOG_INFO("RPC - req={} re-resolved {} to app={} msg={} host={}",
+                    requestId, targetUri, newAppId, newMsgId, newHost);
+        return requestId;
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - req={} failed after re-resolve: {}",
+                     requestId, e.what());
         faabric::util::ScopedLock lock(mx);
         auto it = ops.find(requestId);
         if (it != ops.end()) {
             it->second.ready = true;
             it->second.response.set_requestid(requestId);
             it->second.response.set_statuscode(Rpc_StatusCode::UNAVAILABLE);
-            it->second.response.set_errormessage("failed to send request");
+            it->second.response.set_errormessage(
+              "failed to send request after re-resolve");
         }
+        return requestId;
     }
-
-    return requestId;
 }
 
 bool RpcContext::hasPendingRequest(uint32_t requestId)
@@ -526,6 +567,26 @@ void RpcContext::setupForwarding(const std::string& newHost,
     }
 
     reg.removeContext(ownerAppId, ownerMsgId);
+}
+
+std::optional<faabric::planner::ServiceEndpoint>
+RpcContext::reresolveChannel(int32_t channelId, const std::string& targetUri)
+{
+    const std::string serviceName = targetUri.substr(kFaabricScheme.size());
+    auto endpoint = resolver->resolve(serviceName);
+    if (!endpoint.has_value()) {
+        return std::nullopt;
+    }
+
+    faabric::util::ScopedLock lock(mx);
+    auto chIt = channels.find(channelId);
+    if (chIt != channels.end()) {
+        ChannelInfo& info = chIt->second;
+        info.targetAppId = endpoint->appid();
+        info.targetMessageId = endpoint->messageid();
+        info.targetHost = endpoint->host();
+    }
+    return endpoint;
 }
 
 } // namespace faabric::rpc

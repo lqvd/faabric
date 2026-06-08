@@ -145,6 +145,30 @@ void RpcTransportClient::asyncSendFetch(const faabric::RpcFetchRequest& fetch)
     SPDLOG_TRACE("RPC - Sent fetch for requestId={}", fetch.requestid());
 }
 
+void RpcTransportClient::asyncSendInvocationFetch(
+  const faabric::RpcInvocationFetchRequest& fetch)
+{
+    std::string buffer;
+    if (!fetch.SerializeToString(&buffer)) {
+        throw std::runtime_error(
+          "Failed to serialise RpcInvocationFetchRequest");
+    }
+
+    std::visit(
+    [&](auto& endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+        if constexpr (std::is_same_v<Endpoint, std::monostate>) {
+            SPDLOG_TRACE("RPC mock - dropping invocation fetch");
+        } else {
+            endpoint.send(faabric::rpc::RpcMessageType::INVOKE_FETCH,
+                          BYTES_CONST(buffer.c_str()),
+                          buffer.size(),
+                          0);
+        }
+    },
+    asyncEndpoint);
+}
+
 void RpcTransportClient::asyncSendShutdown(
   const faabric::RpcShutdownRequest& shutdown)
 {

@@ -3,6 +3,7 @@
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcServiceResolver.h>
 #include <faabric/rpc/RpcTransportClient.h>
+#include <faabric/planner/planner.pb.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -55,6 +56,9 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     ChannelInfo getChannel(int32_t channelId);
 
     void closeChannel(int32_t channelId);
+
+    bool retargetChannel(int32_t channelId,
+                         const faabric::planner::ServiceEndpoint& endpoint);
 
     // ------
     // Migration serialisation and deserialisation
@@ -116,6 +120,9 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     std::shared_ptr<RpcTransportClient> getOrCreateTransportLocked(
       const ChannelInfo& info);
+    
+    std::optional<faabric::planner::ServiceEndpoint> reresolveChannel(
+      int32_t channelId, const std::string& targetUri);
 };
 
 } // namespace faabric::rpc

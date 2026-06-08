@@ -2,10 +2,11 @@
 
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/transport/MessageEndpointServer.h>
-#include <faabric/util/queue.h>
+#include <faabric/transport/common.h>
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifndef NDEBUG
@@ -36,7 +38,7 @@ struct PendingInvocation
     std::string method;
     std::string payload;
     std::string replyHost;
-    int32_t replyPort = 0;
+    int32_t replyPort = RPC_ASYNC_PORT;
 
     int32_t targetAppId = 0;
     int32_t targetMessageId = 0;
@@ -67,16 +69,25 @@ struct ServiceInstanceKeyHash
     }
 };
 
-struct ServiceForwardingEntry
-{
-    std::string host;
-    std::chrono::steady_clock::time_point expiry;
-};
-
 struct RpcFunctionTarget
 {
     std::string user;
     std::string function;
+};
+
+struct ServiceForwardTarget
+{
+    std::string host;
+    int32_t port = 0;
+};
+
+struct ServiceMigrationEntry
+{
+    std::deque<PendingInvocation> pending;
+
+    std::optional<ServiceForwardTarget> destination;
+
+    std::chrono::steady_clock::time_point expiry;
 };
 
 // -----------------------------------
@@ -107,12 +118,17 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     std::optional<PendingInvocation> tryDequeueInvocation(int32_t appId,
                                                           int32_t messageId);
 
-    // Called during migration. Set up forwardin, remove local delivery,
-    // drains queued invocations, and forwards them.
-    void migrateServiceQueue(int32_t appId,
-                             int32_t messageId,
-                             const std::string& dstHost,
-                             std::chrono::milliseconds ttl);
+    // Source-side migration hook. Removes local delivery and stores the service
+    // queue until the restored destination explicitly fetches it.
+    void beginServiceQueueMigration(int32_t appId,
+                                    int32_t messageId,
+                                    std::chrono::milliseconds ttl);
+
+    // Destination-side migration hook. Called after restore and service
+    // registration. Pulls the migrated queue from the origin host.
+    void fetchMigratedServiceQueue(const std::string& originHost,
+                                   int32_t appId,
+                                   int32_t messageId);
 
     // Request a graceful shutdown for service with appId and messageId.
     void requestShutdown(int32_t appId, int32_t messageId);
@@ -134,6 +150,7 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     void recvInvoke(std::span<const uint8_t> buffer);
     void recvResponse(std::span<const uint8_t> buffer);
     void recvFetch(std::span<const uint8_t> buffer);
+    void recvInvocationFetch(std::span<const uint8_t> buffer);
     void recvShutdown(std::span<const uint8_t> buffer);
 
     std::optional<RpcFunctionTarget> resolveMethod(
@@ -150,12 +167,12 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     std::mutex servicesMx;
 
     std::unordered_map<ServiceInstanceKey,
-                       std::shared_ptr<faabric::util::Queue<PendingInvocation>>,
-                       ServiceInstanceKeyHash> serviceQueues;
+                   std::deque<PendingInvocation>,
+                   ServiceInstanceKeyHash> serviceQueues;
 
     std::unordered_map<ServiceInstanceKey,
-                       ServiceForwardingEntry,
-                       ServiceInstanceKeyHash> serviceForwarding;
+                   ServiceMigrationEntry,
+                   ServiceInstanceKeyHash> serviceMigrations;
 
     std::unordered_set<ServiceInstanceKey, ServiceInstanceKeyHash>
       shutdownRequested;
@@ -166,16 +183,12 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
                            int32_t messageId,
                            PendingInvocation invocation);
 
-    void setServiceForwardingAddress(int32_t appId,
-                                     int32_t messageId,
-                                     const std::string& host,
-                                     std::chrono::milliseconds ttl);
-
-    std::optional<std::string> getServiceForwardingAddress(int32_t appId,
-                                                           int32_t messageId);
+    faabric::RpcRequest pendingInvocationToRpcRequest(
+      const PendingInvocation& invocation) const;
 
     void forwardInvokeToHost(const faabric::RpcRequest& req,
-                             const std::string& host);
+                             const std::string& host,
+                             int32_t port);
 };
 
 RpcServer& getRpcServer();

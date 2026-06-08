@@ -1418,21 +1418,39 @@ void Planner::setNextEvictedVm(const std::set<std::string>& vmIps)
 
 
 void Planner::notifyServiceReady(const std::string& serviceName,
-                                  const std::string& host,
-                                  int32_t appId,
-                                  int32_t messageId)
+                                 const std::string& host,
+                                 int32_t appId,
+                                 int32_t messageId)
 {
     faabric::util::FullLock lock(plannerMx);
 
-    ServiceEndpoint endpoint;
-    endpoint.set_servicename(serviceName);
-    endpoint.set_host(host);
-    endpoint.set_appid(appId);
-    endpoint.set_messageid(messageId);
+    auto& endpoints = state.readyServices[serviceName];
 
-    state.readyServices[serviceName].push_back(endpoint);
+    // An instance is identified by (appId, messageId); migration preserves
+    // the message id and only changes the host. Replace any existing entry
+    // for this instance so a migrated service updates its location in place
+    // rather than leaving a stale endpoint alongside the live one.
+    auto it = std::find_if(
+      endpoints.begin(), endpoints.end(),
+      [&](const ServiceEndpoint& e) {
+          return e.appid() == appId && e.messageid() == messageId;
+      });
 
-    faabric::rpc::getRpcDependencyGraph().setPlacement({appId, messageId}, host);
+    if (it != endpoints.end()) {
+        SPDLOG_INFO("Planner - service {} instance {}/{} moved {} -> {}",
+                    serviceName, appId, messageId, it->host(), host);
+        it->set_host(host);
+    } else {
+        ServiceEndpoint endpoint;
+        endpoint.set_servicename(serviceName);
+        endpoint.set_host(host);
+        endpoint.set_appid(appId);
+        endpoint.set_messageid(messageId);
+        endpoints.push_back(std::move(endpoint));
+    }
+
+    faabric::rpc::getRpcDependencyGraph().setPlacement({ appId, messageId },
+                                                       host);
 
     SPDLOG_INFO("Planner - service {} ready at {}:{}/{}",
                 serviceName, host, appId, messageId);

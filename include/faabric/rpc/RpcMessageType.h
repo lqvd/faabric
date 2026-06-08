@@ -7,7 +7,8 @@ enum RpcMessageType
     INVOKE = 0,
     RESPONSE = 1,
     FETCH = 2,
-    SHUTDOWN_SERVICE = 3,
+    INVOKE_FETCH = 3,
+    SHUTDOWN_SERVICE = 4,
 };
 
 }   // namespace faabric::rpc

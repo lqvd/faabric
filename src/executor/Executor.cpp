@@ -429,6 +429,23 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
 
                 rpcCtx->deserializeMigrationState(rpcMigCtx);
 
+                if (msg.islongrunning()) {
+                    faabric::rpc::getRpcServer().registerServiceInstance(
+                      msg.appid(),
+                      msg.id());
+
+                    faabric::planner::getPlannerClient().notifyServiceReady(
+                      msg.rpcservice(), msg.appid(), msg.id());
+
+                    if (!rpcMigCtx.originhost().empty() &&
+                          rpcMigCtx.originhost() != conf.endpointHost) {
+                        faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
+                          rpcMigCtx.originhost(),
+                          msg.appid(),
+                          msg.id());
+                    }
+                }
+
                 SPDLOG_INFO("RPC - Deserialised migration state for msg {}", msg.id());
             }
             
@@ -623,12 +640,13 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 setThreadResult(msg, returnValue, "", {});
             }
         } else {
-            if (msg.isrpc() && msg.islongrunning()) {
+            if (msg.isrpc() && msg.islongrunning() &&
+                  returnValue != MIGRATED_FUNCTION_RETURN_VALUE) {
                 faabric::planner::getPlannerClient().notifyServiceStopped(
-                    msg.rpcservice(),
-                    msg.appid(),
-                    msg.id());
-                    
+                  msg.rpcservice(),
+                  msg.appid(),
+                  msg.id());
+
                 faabric::rpc::getRpcServer().unregisterServiceInstance(
                   msg.appid(),
                   msg.id());

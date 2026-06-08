@@ -33,6 +33,9 @@ class RpcTransportClient
 
     void asyncSendFetch(const faabric::RpcFetchRequest& fetch);
 
+    void asyncSendInvocationFetch(
+      const faabric::RpcInvocationFetchRequest& fetch);
+
     void asyncSendShutdown(const faabric::RpcShutdownRequest& shutdown);
 
   private:
