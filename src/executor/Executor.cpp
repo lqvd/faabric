@@ -23,6 +23,7 @@
 #include <faabric/util/macros.h>
 #include <faabric/util/memory.h>
 #include <faabric/util/queue.h>
+#include <faabric/util/ScopedTelemetry.h>
 #include <faabric/util/snapshot.h>
 #include <faabric/util/string_tools.h>
 #include <faabric/util/timing.h>
@@ -389,6 +390,8 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
         // Execute the task
         int32_t returnValue;
         try {
+            auto tDestStart = std::chrono::steady_clock::now();
+
             // Right before executing the task, do any kind of synchronisation
             // if the task has been migrated. Also benefit from the try/catch
             // statement in case the migration fails
@@ -413,6 +416,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                     throw std::runtime_error("No RPC context on migration restore");
                 }
 
+                auto tParse = std::chrono::steady_clock::now();
                 faabric::RpcMigrationState rpcMigCtx;
                 if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
                                               task.req->contextdata().size())) {
@@ -421,13 +425,21 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                     throw std::runtime_error(
                       "Failed to parse RpcMigrationState");
                 }
+                faabric::planner::getPlannerClient().reportTelemetry(
+                  msg.appid(), msg.id(), "migration.rpcstate.parse.us",
+                  faabric::util::usSince(tParse));
 
                 SPDLOG_INFO("RPC - Parsed migration state: {} channels, "
                             "{} pending requests",
                             rpcMigCtx.channels_size(),
                             rpcMigCtx.pendingrequests_size());
 
-                rpcCtx->deserializeMigrationState(rpcMigCtx);
+                {
+                    faabric::util::ScopedTelemetry t(
+                      msg.appid(), msg.id(),
+                      "migration.rpcstate.deserialize.us");
+                    rpcCtx->deserializeMigrationState(rpcMigCtx);
+                }
 
                 if (msg.islongrunning()) {
                     faabric::rpc::getRpcServer().registerServiceInstance(
@@ -437,8 +449,16 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                     faabric::planner::getPlannerClient().notifyServiceReady(
                       msg.rpcservice(), msg.appid(), msg.id());
 
+                    faabric::planner::getPlannerClient().reportTelemetry(
+                      msg.appid(), msg.id(), "migration.dest.reconstruct.us",
+                      faabric::util::usSince(tDestStart));
+
                     if (!rpcMigCtx.originhost().empty() &&
                           rpcMigCtx.originhost() != conf.endpointHost) {
+                        faabric::util::ScopedTelemetry t(
+                          msg.appid(), msg.id(),
+                          "migration.backlog.fetch.send.us");
+
                         faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
                           rpcMigCtx.originhost(),
                           msg.appid(),
