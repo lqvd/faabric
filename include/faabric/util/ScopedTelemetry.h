@@ -6,6 +6,13 @@
 
 namespace faabric::util {
 
+static inline int64_t usSince(std::chrono::steady_clock::time_point t)
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::steady_clock::now() - t).count();
+}
+
+// Use to report timing of a scope.
 class ScopedTelemetry
 {
   public:
@@ -18,11 +25,12 @@ class ScopedTelemetry
 
     ~ScopedTelemetry()
     {
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - start)
-                    .count();
-        faabric::planner::getPlannerClient().reportTelemetry(
-          appId, msgId, label, us);
+        try {
+            auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - start).count();
+            faabric::planner::getPlannerClient().reportTelemetry(
+              appId, msgId, label, us);
+        } catch (...) { }
     }
 
   private:
