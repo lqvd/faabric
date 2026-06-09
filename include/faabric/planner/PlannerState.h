@@ -62,5 +62,14 @@ struct PlannerState
     std::map<std::string, std::vector<ServiceEndpoint>> readyServices;
     
     std::map<std::string, size_t> serviceRrCounter;
+
+    // -----
+    // Data structures used for internal telemetry reporting
+    // -----
+    
+    // Telemetry records keyed by message id. Migration preserves the message
+    // id across hosts, so all stamps for a single migrated instance (serialize
+    // on the source, restore/deserialize on the destination) collate here.
+    std::map<int, std::vector<TelemetryRecord>> telemetry;
 };
 }

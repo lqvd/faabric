@@ -107,6 +107,7 @@ class Planner
     // ----------
     // API for RPC management
     // ----------
+
     void notifyServiceReady(const std::string& serviceName,
                             const std::string& host,
                             int32_t appId,
@@ -119,6 +120,15 @@ class Planner
     std::optional<ServiceEndpoint> discoverService(
       const std::string& serviceName,
       const std::string& callerHost = "");
+
+
+    // ----------
+    // API for RPC internal telemetry
+    // ----------
+
+    void recordTelemetry(const TelemetryReport& report);
+    
+    std::map<int, std::vector<TelemetryRecord>> getTelemetry();
 
   private:
     // There's a singleton instance of the planner running, but it must allow

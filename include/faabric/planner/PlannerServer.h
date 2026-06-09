@@ -25,6 +25,8 @@ class PlannerServer final : public faabric::transport::MessageEndpointServer
 
     void recvNotifyServiceStopped(std::span<const uint8_t> buffer);
 
+    void recvReportTelemetry(std::span<const uint8_t> buffer);
+
     // Synchronous calls
 
     std::unique_ptr<google::protobuf::Message> recvPing();

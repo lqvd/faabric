@@ -53,6 +53,7 @@ message HttpMessage {
         SET_NEXT_EVICTED_VM = 15;
         DISCOVER_SERVICE = 16;
         SHUTDOWN_SERVICE = 17;
+        GET_TELEMETRY = 18;
     }
 
     Type type = 1 [json_name = "http_type"];
@@ -184,4 +185,31 @@ message DiscoverServiceRequest {
 message DiscoverServiceResponse {
     bool found = 1;
     ServiceEndpoint endpoint = 2;
+}
+
+// ---------------------------------------------
+// Internal Telemetry Reporting
+// ---------------------------------------------
+
+// A single measurement reported by a worker. `label` names the stamp point
+// (e.g. "migration.serialize.us"); `value` is the measured quantity
+// (microseconds for durations, bytes for sizes). The message id ties the
+// record to a migrated instance and is preserved across source and dest hosts.
+message TelemetryRecord {
+    int32 appId = 1;
+    int32 messageId = 2;
+    string label = 3;
+    int64 value = 4;
+    string host = 5;
+    int64 timestampMs = 6;
+}
+
+// Workers batch one or more records per report; the source and destination of
+// a migration each emit their own report under the same message id.
+message TelemetryReport {
+    repeated TelemetryRecord records = 1;
+}
+
+message TelemetryResponse {
+    repeated TelemetryRecord records = 1;
 }

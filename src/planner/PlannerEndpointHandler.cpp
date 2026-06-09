@@ -466,6 +466,28 @@ void PlannerEndpointHandler::onRequest(
             response.body() = "Shutdown sent";
             return ctx.sendFunction(std::move(response));
         }
+        case faabric::planner::HttpMessage_Type_GET_TELEMETRY: {
+            SPDLOG_DEBUG("Planner received GET_TELEMETRY request");
+
+            auto telemetry = faabric::planner::getPlanner().getTelemetry();
+
+            TelemetryResponse resp;
+            for (const auto& [messageId, records] : telemetry) {
+                for (const auto& record : records) {
+                    *resp.add_records() = record;
+                }
+            }
+
+            try {
+                response.result(beast::http::status::ok);
+                response.body() = faabric::util::messageToJson(resp);
+            } catch (faabric::util::JsonSerialisationException& e) {
+                SPDLOG_ERROR("Error processing GET_TELEMETRY request");
+                response.result(beast::http::status::internal_server_error);
+                response.body() = std::string("Failed getting telemetry!");
+            }
+            return ctx.sendFunction(std::move(response));
+        }
         default: {
             SPDLOG_ERROR("Unrecognised message type {}", msg.type());
             response.result(beast::http::status::bad_request);

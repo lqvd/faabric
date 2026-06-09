@@ -24,5 +24,6 @@ enum PlannerCalls
     NotifyServiceReady = 16,
     NotifyServiceStopped = 17,
     ReportRpcDependencies = 18,
+    ReportTelemetry = 19,
 };
 }

@@ -40,6 +40,10 @@ void PlannerServer::doAsyncRecv(transport::Message& message)
             recvNotifyServiceStopped(message.udata());
             break;
         }
+        case PlannerCalls::ReportTelemetry: {
+            recvReportTelemetry(message.udata());
+            break;
+        }
         default: {
             // If we don't recognise the header, let the client fail, but don't
             // crash the planner
@@ -185,6 +189,14 @@ void PlannerServer::recvNotifyServiceStopped(std::span<const uint8_t> buffer)
     planner.notifyServiceStopped(parsedMsg.servicename(),
                                  parsedMsg.appid(),
                                  parsedMsg.messageid());
+}
+
+void PlannerServer::recvReportTelemetry(std::span<const uint8_t> buffer)
+{
+    PARSE_MSG(TelemetryReport, buffer.data(), buffer.size());
+    SPDLOG_TRACE("Planner received telemetry report with {} records",
+                 parsedMsg.records_size());
+    planner.recordTelemetry(parsedMsg);
 }
 
 std::unique_ptr<google::protobuf::Message> PlannerServer::recvGetMessageResult(

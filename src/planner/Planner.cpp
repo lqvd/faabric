@@ -269,6 +269,8 @@ void Planner::flushSchedulingState()
     state.nextEvictedHostIps.clear();
 
     state.serviceRrCounter.clear();
+
+    state.telemetry.clear();
 }
 
 std::vector<std::shared_ptr<Host>> Planner::getAvailableHosts()
@@ -1508,6 +1510,28 @@ std::optional<ServiceEndpoint> Planner::discoverService(
 
     size_t idx = state.serviceRrCounter[serviceName]++ % endpoints.size();
     return endpoints.at(idx);
+}
+
+void Planner::recordTelemetry(const TelemetryReport& report)
+{
+    faabric::util::FullLock lock(plannerMx);
+
+    for (const auto& record : report.records()) {
+        SPDLOG_TRACE("Planner telemetry {}:{} {}={}",
+                     record.appid(),
+                     record.messageid(),
+                     record.label(),
+                     record.value());
+        state.telemetry[record.messageid()].push_back(record);
+    }
+}
+
+std::map<int, std::vector<TelemetryRecord>> Planner::getTelemetry()
+{
+    faabric::util::SharedLock lock(plannerMx);
+
+    // Deliberately deep-copy out under the lock
+    return state.telemetry;
 }
 
 Planner& getPlanner()

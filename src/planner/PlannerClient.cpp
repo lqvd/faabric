@@ -489,6 +489,33 @@ void PlannerClient::reportRpcDependencies(
 {
     asyncSend(PlannerCalls::ReportRpcDependencies, &batch);
 }
+
+// -----------------------------------
+// RPC benchmarking telemetry
+// -----------------------------------
+
+void PlannerClient::reportTelemetry(const TelemetryReport& report)
+{
+    asyncSend(PlannerCalls::ReportTelemetry, &report);
+}
+
+void PlannerClient::reportTelemetry(int32_t appId,
+                                    int32_t messageId,
+                                    const std::string& label,
+                                    int64_t value)
+{
+    TelemetryReport report;
+    auto* record = report.add_records();
+    record->set_appid(appId);
+    record->set_messageid(messageId);
+    record->set_label(label);
+    record->set_value(value);
+    record->set_host(faabric::util::getSystemConfig().endpointHost);
+    record->set_timestampms(faabric::util::getGlobalClock().epochMillis());
+
+    asyncSend(PlannerCalls::ReportTelemetry, &report);
+}
+
 // -----------------------------------
 // Static setter/getters
 // -----------------------------------
