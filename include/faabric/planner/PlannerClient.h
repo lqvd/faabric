@@ -131,7 +131,7 @@ class PlannerClient final : public faabric::transport::MessageEndpointClient
     // RPC benchmarking telemetry
     // ------
 
-    void reportTelemetry(const TelemetryReport& report);
+    void reportTelemetry(TelemetryReport& report);
 
     void reportTelemetry(
       int32_t appId, int32_t messageId, const std::string& label, int64_t value);

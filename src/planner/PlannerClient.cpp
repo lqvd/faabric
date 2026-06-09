@@ -494,7 +494,7 @@ void PlannerClient::reportRpcDependencies(
 // RPC benchmarking telemetry
 // -----------------------------------
 
-void PlannerClient::reportTelemetry(const TelemetryReport& report)
+void PlannerClient::reportTelemetry(TelemetryReport& report)
 {
     asyncSend(PlannerCalls::ReportTelemetry, &report);
 }
