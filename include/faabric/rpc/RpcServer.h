@@ -1,5 +1,6 @@
 #pragma once
 
+#include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/transport/MessageEndpointServer.h>
 #include <faabric/transport/common.h>
@@ -189,6 +190,24 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
     void forwardInvokeToHost(const faabric::RpcRequest& req,
                              const std::string& host,
                              int32_t port);
+
+    // -----------------------------------
+    // transport caching
+    // -----------------------------------
+
+    std::mutex transportMx;
+    std::unordered_map<std::string, std::shared_ptr<RpcTransportClient>>
+      transportCache;
+
+    // Returns a cached async-send transport for host:port, constructing one
+    // on first use. Shared across server worker threads; the underlying NNG
+    // push socket is safe for concurrent sends.
+    std::shared_ptr<RpcTransportClient> getOrCreateTransport(
+      const std::string& host, int32_t port);
+
+    // Drops a cached transport (e.g. after a send failure) so the next use
+    // reconstructs a fresh connection.
+    void evictTransport(const std::string& host, int32_t port);
 };
 
 RpcServer& getRpcServer();
