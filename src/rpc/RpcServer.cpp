@@ -174,14 +174,13 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
                 fetch.replyport());
 
     try {
-        RpcTransportClient client(fetch.replyhost(), fetch.replyport(),
-                                  RPC_SYNC_PORT, kRpcTimeoutMs);
-
-        client.asyncSendResponse(cached.value());
+        auto client = getOrCreateTransport(fetch.replyhost(), fetch.replyport());
+        client->asyncSendResponse(cached.value());
         registry.clearRequest(requestId);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to send cached response {} to {}:{}: {}",
                      requestId, fetch.replyhost(), fetch.replyport(), e.what());
+        evictTransport(fetch.replyhost(), fetch.replyport());
         registry.cacheResponse(requestId, cached.value());
     }
 }
@@ -234,17 +233,15 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
                 pendingFetch->port);
 
     try {
-        RpcTransportClient client(
-          pendingFetch->host, pendingFetch->port, RPC_SYNC_PORT, kRpcTimeoutMs);
-        client.asyncSendResponse(resp);
+        auto client =
+          getOrCreateTransport(pendingFetch->host, pendingFetch->port);
+        client->asyncSendResponse(resp);
         registry.clearRequest(requestId);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
-                     requestId,
-                     pendingFetch->host,
-                     pendingFetch->port,
+                     requestId, pendingFetch->host, pendingFetch->port,
                      e.what());
-
+        evictTransport(pendingFetch->host, pendingFetch->port);
         registry.cacheResponse(requestId, resp);
     }
 }
@@ -348,12 +345,8 @@ void RpcServer::fetchMigratedServiceQueue(const std::string& originHost,
                 fetch.replyhost(),
                 fetch.replyport());
 
-    RpcTransportClient client(originHost,
-                              RPC_ASYNC_PORT,
-                              RPC_SYNC_PORT,
-                              kRpcTimeoutMs);
-
-    client.asyncSendInvocationFetch(fetch);
+    auto client = getOrCreateTransport(originHost, RPC_ASYNC_PORT);
+    client->asyncSendInvocationFetch(fetch);
 }
 
 // -----------------------------------
@@ -370,17 +363,13 @@ void RpcServer::sendErrorResponseToReplyHost(const faabric::RpcRequest& req,
     resp.set_errormessage(errorMessage);
 
     try {
-        RpcTransportClient client(req.replyhost(),
-                                  req.replyport(),
-                                  RPC_SYNC_PORT,
-                                  kRpcTimeoutMs);
-        client.asyncSendResponse(resp);
+        auto client = getOrCreateTransport(req.replyhost(), req.replyport());
+        client->asyncSendResponse(resp);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to send error response {} to {}:{}: {}",
-                     req.requestid(),
-                     req.replyhost(),
-                     req.replyport(),
+                     req.requestid(), req.replyhost(), req.replyport(),
                      e.what());
+        evictTransport(req.replyhost(), req.replyport());
     }
 }
 
@@ -612,18 +601,15 @@ void RpcServer::forwardInvokeToHost(const faabric::RpcRequest& req,
                 port);
 
     try {
-        RpcTransportClient client(host, port, RPC_SYNC_PORT, kRpcTimeoutMs);
-        client.asyncSendRequest(req.requestid(), req);
+        auto client = getOrCreateTransport(host, port);
+        client->asyncSendRequest(req.requestid(), req);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to forward INVOKE {} to {}:{}: {}",
-                     req.requestid(),
-                     host,
-                     port,
-                     e.what());
-
-        sendErrorResponseToReplyHost(req,
-                                     Rpc_StatusCode::INTERNAL,
-                                     "Failed to forward to service host");
+                     req.requestid(), host, port, e.what());
+        evictTransport(host, port);
+        sendErrorResponseToHost(req,
+                                Rpc_StatusCode::INTERNAL,
+                                "Failed to forward to service host");
     }
 }
 
@@ -701,6 +687,35 @@ bool RpcServer::isShutdownRequested(int32_t appId, int32_t messageId)
     const ServiceInstanceKey key{ appId, messageId };
     std::scoped_lock lock(servicesMx);
     return shutdownRequested.contains(key);
+}
+
+// -----------------------------------
+// transport
+// -----------------------------------
+
+std::shared_ptr<RpcTransportClient> RpcServer::getOrCreateTransport(
+  const std::string& host, int32_t port)
+{
+    const std::string key = host + ":" + std::to_string(port);
+
+    std::scoped_lock lock(transportMx);
+
+    auto it = transportCache.find(key);
+    if (it != transportCache.end()) {
+        return it->second;
+    }
+
+    auto transport = std::make_shared<RpcTransportClient>(
+      host, port, RPC_SYNC_PORT, kRpcTimeoutMs);
+    transportCache.emplace(key, transport);
+    return transport;
+}
+
+void RpcServer::evictTransport(const std::string& host, int32_t port)
+{
+    const std::string key = host + ":" + std::to_string(port);
+    std::scoped_lock lock(transportMx);
+    transportCache.erase(key);
 }
 
 // -----------------------------------
