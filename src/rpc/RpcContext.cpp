@@ -369,9 +369,9 @@ uint32_t RpcContext::startUnary(int32_t channelId,
     try {
         transport->asyncSendRequest(requestId, buildReq(targetAppId,
                                                         targetMessageId));
-        getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
-                                         targetAppId, targetMessageId,
-                                         cfg.endpointHost, targetHost);
+        // getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
+        //                                  targetAppId, targetMessageId,
+        //                                  cfg.endpointHost, targetHost);
         return requestId;
     } catch (const std::exception& e) {
         SPDLOG_WARN("RPC - send for req={} to {} failed ({}); re-resolving {}",
@@ -403,9 +403,9 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         }
 
         freshTransport->asyncSendRequest(requestId, buildReq(newAppId, newMsgId));
-        getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
-                                         newAppId, newMsgId,
-                                         cfg.endpointHost, newHost);
+        // getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
+        //                                  newAppId, newMsgId,
+        //                                  cfg.endpointHost, newHost);
         SPDLOG_INFO("RPC - req={} re-resolved {} to app={} msg={} host={}",
                     requestId, targetUri, newAppId, newMsgId, newHost);
         return requestId;
