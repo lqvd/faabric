@@ -77,7 +77,7 @@ void Scheduler::addHostToGlobalSet(
     if (hostIp == thisHost && !faabric::util::isTestMode()) {
         keepAliveThread.setRequest(req);
         keepAliveThread.start(plannerConfig.hosttimeout() / 2);
-        rpcTelemetryThread.start(plannerConfig.rpctelemetryinterval());
+        // rpcTelemetryThread.start(plannerConfig.rpctelemetryinterval());
     }
 }
 
@@ -102,7 +102,7 @@ void Scheduler::removeHostFromGlobalSet(const std::string& hostIp)
     // Clear the keep alive thread
     if (isThisHost) {
         keepAliveThread.stop();
-        rpcTelemetryThread.stop();
+        // rpcTelemetryThread.stop();
     }
 }
 
