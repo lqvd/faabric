@@ -607,9 +607,9 @@ void RpcServer::forwardInvokeToHost(const faabric::RpcRequest& req,
         SPDLOG_ERROR("RPC - Failed to forward INVOKE {} to {}:{}: {}",
                      req.requestid(), host, port, e.what());
         evictTransport(host, port);
-        sendErrorResponseToHost(req,
-                                Rpc_StatusCode::INTERNAL,
-                                "Failed to forward to service host");
+        sendErrorResponseToReplyHost(req,
+                                     Rpc_StatusCode::INTERNAL,
+                                     "Failed to forward to service host");
     }
 }
 

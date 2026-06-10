@@ -1,5 +1,6 @@
 #pragma once
 
+#include <faabric/rpc/RpcTransportClient.h>
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/transport/MessageEndpointServer.h>
 #include <faabric/transport/common.h>
