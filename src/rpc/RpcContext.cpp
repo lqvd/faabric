@@ -229,7 +229,7 @@ void RpcContext::deserializeMigrationState(
 
         nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
 
-        SPDLOG_INFO("RPC - Deserialising {} pending requests",
+        SPDLOG_DEBUG("RPC - Deserialising {} pending requests",
                     migrationCtx.pendingrequests_size());
 
         for (const auto& pendingReq : migrationCtx.pendingrequests()) {
@@ -406,7 +406,7 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         getRpcTracker().recordDependency(ownerAppId, ownerMsgId,
                                          newAppId, newMsgId,
                                          cfg.endpointHost, newHost);
-        SPDLOG_INFO("RPC - req={} re-resolved {} to app={} msg={} host={}",
+        SPDLOG_DEBUG("RPC - req={} re-resolved {} to app={} msg={} host={}",
                     requestId, targetUri, newAppId, newMsgId, newHost);
         return requestId;
     } catch (const std::exception& e) {
@@ -519,7 +519,7 @@ void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
     it->second.response = resp;
     it->second.ready = true;
 
-    SPDLOG_INFO("RPC - Received response for {}", resp.requestid());
+    SPDLOG_DEBUG("RPC - Received response for {}", resp.requestid());
 }
 
 // -----------------------------------

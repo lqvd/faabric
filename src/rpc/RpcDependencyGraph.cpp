@@ -272,7 +272,7 @@ std::optional<std::string> RpcDependencyGraph::recommendHost(
     // Record the recommendation timestamp so we don't oscillate.
     lastRecommendedAt[node] = now;
 
-    SPDLOG_INFO(
+    SPDLOG_DEBUG(
       "RPC dependency graph recommends app={} msg={} move {} -> {} "
       "(weighted cost {} -> {}, benefit {})",
       node.appId,

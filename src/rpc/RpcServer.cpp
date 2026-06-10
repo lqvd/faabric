@@ -92,7 +92,7 @@ void RpcServer::recvInvoke(std::span<const uint8_t> buffer)
         return;
     }
 
-    SPDLOG_INFO("RPC - Targeted INVOKE arrived requestId={} method={} app={} msg={}",
+    SPDLOG_DEBUG("RPC - Targeted INVOKE arrived requestId={} method={} app={} msg={}",
                 req.requestid(),
                 req.method(),
                 req.targetappid(),
@@ -160,7 +160,7 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
 
     auto cached = registry.consumeCachedResponse(requestId);
     if (!cached.has_value()) {
-        SPDLOG_INFO("RPC - FETCH for {} arrived before response; registering {}:{}",
+        SPDLOG_DEBUG("RPC - FETCH for {} arrived before response; registering {}:{}",
                     requestId, fetch.replyhost(), fetch.replyport());
 
         registry.registerPendingFetch(
@@ -168,7 +168,7 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
         return;
     }
 
-    SPDLOG_INFO("RPC - FETCH for {} matched cached response; sending to {}:{}",
+    SPDLOG_DEBUG("RPC - FETCH for {} matched cached response; sending to {}:{}",
                 requestId,
                 fetch.replyhost(),
                 fetch.replyport());
@@ -209,7 +209,7 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
     auto& registry = getRpcContextRegistry();
 
     if (auto ctx = registry.getContextForRequest(requestId)) {
-        SPDLOG_INFO("RPC - Delivering response {} to local context", requestId);
+        SPDLOG_DEBUG("RPC - Delivering response {} to local context", requestId);
         ctx->onResponseReceived(resp);
         return;
     }
@@ -222,12 +222,12 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
 
     auto pendingFetch = registry.consumePendingFetch(requestId);
     if (!pendingFetch.has_value()) {
-        SPDLOG_INFO("RPC - Response {} arrived before FETCH; caching", requestId);
+        SPDLOG_DEBUG("RPC - Response {} arrived before FETCH; caching", requestId);
         registry.cacheResponse(requestId, resp);
         return;
     }
 
-    SPDLOG_INFO("RPC - Response {} matched FETCH; sending to {}:{}",
+    SPDLOG_DEBUG("RPC - Response {} matched FETCH; sending to {}:{}",
                 requestId,
                 pendingFetch->host,
                 pendingFetch->port);
@@ -301,7 +301,7 @@ void RpcServer::recvInvocationFetch(std::span<const uint8_t> buffer)
         std::chrono::milliseconds(kRpcTimeoutMs);
     }
 
-    SPDLOG_INFO("RPC - INVOKE_FETCH for app={} msg={} draining {} "
+    SPDLOG_DEBUG("RPC - INVOKE_FETCH for app={} msg={} draining {} "
                 "invocations to {}:{}",
                 fetch.targetappid(),
                 fetch.targetmessageid(),
@@ -337,7 +337,7 @@ void RpcServer::fetchMigratedServiceQueue(const std::string& originHost,
     fetch.set_replyhost(conf.endpointHost);
     fetch.set_replyport(RPC_ASYNC_PORT);
 
-    SPDLOG_INFO("RPC - Fetching migrated service queue app={} msg={} "
+    SPDLOG_DEBUG("RPC - Fetching migrated service queue app={} msg={} "
                 "from {} to {}:{}",
                 appId,
                 messageId,
@@ -437,7 +437,7 @@ void RpcServer::registerServiceInstance(int32_t appId, int32_t messageId)
         serviceMigrations.erase(key);
     }
 
-    SPDLOG_INFO("RPC - Registered service instance app={} msg={}",
+    SPDLOG_DEBUG("RPC - Registered service instance app={} msg={}",
                 appId,
                 messageId);
 }
@@ -452,7 +452,7 @@ void RpcServer::unregisterServiceInstance(int32_t appId, int32_t messageId)
         shutdownRequested.erase(key);
     }
 
-    SPDLOG_INFO("RPC - Unregistered service instance app={} msg={}",
+    SPDLOG_DEBUG("RPC - Unregistered service instance app={} msg={}",
                 appId,
                 messageId);
 }
@@ -593,7 +593,7 @@ void RpcServer::forwardInvokeToHost(const faabric::RpcRequest& req,
                                     const std::string& host,
                                     int32_t port)
 {
-    SPDLOG_INFO("RPC - Forwarding INVOKE {} for app={} msg={} to {}:{}",
+    SPDLOG_DEBUG("RPC - Forwarding INVOKE {} for app={} msg={} to {}:{}",
                 req.requestid(),
                 req.targetappid(),
                 req.targetmessageid(),
@@ -652,7 +652,7 @@ void RpcServer::beginServiceQueueMigration(int32_t appId,
         pendingSize = migration.pending.size();
     }
 
-    SPDLOG_INFO("RPC - Service app={} msg={} entered pending pull with {} "
+    SPDLOG_DEBUG("RPC - Service app={} msg={} entered pending pull with {} "
                 "pending invocations",
                 appId,
                 messageId,
@@ -678,7 +678,7 @@ void RpcServer::requestShutdown(int32_t appId, int32_t messageId)
         shutdownRequested.insert(key);
     }
 
-    SPDLOG_INFO("RPC - Shutdown requested for service instance app={} msg={}",
+    SPDLOG_DEBUG("RPC - Shutdown requested for service instance app={} msg={}",
                 appId, messageId);
 }
 
