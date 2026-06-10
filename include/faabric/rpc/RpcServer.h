@@ -136,6 +136,11 @@ class RpcServer final : public faabric::transport::MessageEndpointServer
 
     bool isShutdownRequested(int32_t appId, int32_t messageId);
 
+    // Send response to a host...
+    void sendResponseToHost(const faabric::RpcResponse& resp,
+                            const std::string& host,
+                            int32_t port);
+
   protected:
     void doAsyncRecv(transport::Message& message) override;
 

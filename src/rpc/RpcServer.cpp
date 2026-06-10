@@ -718,6 +718,21 @@ void RpcServer::evictTransport(const std::string& host, int32_t port)
     transportCache.erase(key);
 }
 
+void RpcServer::sendResponseToHost(const faabric::RpcResponse& resp,
+                                   const std::string& host,
+                                   int32_t port)
+{
+    try {
+        auto client = getOrCreateTransport(host, port);
+        client->asyncSendResponse(resp);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
+                     resp.requestid(), host, port, e.what());
+        evictTransport(host, port);
+        throw;
+    }
+}
+
 // -----------------------------------
 // static getter
 // -----------------------------------
