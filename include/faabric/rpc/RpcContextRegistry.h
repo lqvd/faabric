@@ -85,8 +85,6 @@ class RpcContextRegistry
     std::shared_ptr<faabric::rpc::RpcContext> getContextForRequest(
       uint32_t requestId);
 
-    void clearAllRequestsForContext(int32_t appId, int32_t msgId);
-
     // -----------------------------------
     // request ownership / validity
     // -----------------------------------

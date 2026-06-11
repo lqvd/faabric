@@ -164,6 +164,9 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
 
     faabric::util::ScopedLock lock(mx);
 
+    // Also removes the context.
+    setupForwarding();
+
     for (const auto& [channelId, info] : channels) {
         auto* channelState = migrationCtx.add_channels();
         channelState->set_channelid(channelId);
@@ -360,9 +363,6 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         ops.emplace(requestId, std::move(op));
         requestToChannel.emplace(requestId, channelId);
     }
-
-    getRpcContextRegistry().registerInFlightRequest(
-      requestId, ownerAppId, ownerMsgId);
 
     const auto& cfg = faabric::util::getSystemConfig();
 
@@ -687,29 +687,24 @@ void RpcContext::retryUnaryAfterUnavailable(uint32_t requestId,
 // forwarding
 // -----------------------------------
 
-void RpcContext::setupForwarding(const std::string& newHost,
-                                 std::chrono::milliseconds defaultTtl)
+void RpcContext::setupForwarding(std::chrono::milliseconds defaultTtl)
 {
     namespace chrono = std::chrono;
     std::unordered_set<uint32_t> pendingIds;
     chrono::milliseconds maxRemaining{ 0 };
 
-    {
-        faabric::util::ScopedLock lock(mx);
+    const auto now = chrono::steady_clock::now();
 
-        const auto now = chrono::steady_clock::now();
+    for (const auto& [reqId, op] : ops) {
+        if (op.ready) continue;
 
-        for (const auto& [reqId, op] : ops) {
-            if (op.ready) continue;
+        pendingIds.insert(reqId);
+        if (op.deadline.has_value()) {
+            auto remaining = chrono::duration_cast<chrono::milliseconds>(
+                op.deadline.value() - now);
 
-            pendingIds.insert(reqId);
-            if (op.deadline.has_value()) {
-                auto remaining = chrono::duration_cast<chrono::milliseconds>(
-                  op.deadline.value() - now);
-
-                if (remaining.count() > 0) {
-                    maxRemaining = std::max(maxRemaining, remaining);
-                }
+            if (remaining.count() > 0) {
+                maxRemaining = std::max(maxRemaining, remaining);
             }
         }
     }

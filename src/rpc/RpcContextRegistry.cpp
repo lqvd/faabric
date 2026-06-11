@@ -99,26 +99,6 @@ std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
     return ctxIt == contextByKey.end() ? nullptr : ctxIt->second;
 }
 
-void RpcContextRegistry::clearAllRequestsForContext(
-  int32_t appId,
-  int32_t msgId)
-{
-    faabric::util::FullLock lock(mx);
-
-    RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
-
-    for (auto it = requests.begin(); it != requests.end();) {
-        if (it->second.owner == key) {
-            const uint32_t requestId = it->first;
-            cachedResponses.erase(requestId);
-            pendingFetches.erase(requestId);
-            it = requests.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
 // -----------------------------------
 // request ownership / validity
 // -----------------------------------
