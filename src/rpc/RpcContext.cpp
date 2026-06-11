@@ -703,10 +703,14 @@ void RpcContext::setupForwarding(const std::string& newHost,
             if (op.ready) continue;
 
             pendingIds.insert(reqId);
-            auto remaining = chrono::duration_cast<chrono::milliseconds>(
-              op.deadline.value() - now);
+            if (op.deadline.has_value()) {
+                auto remaining = chrono::duration_cast<chrono::milliseconds>(
+                  op.deadline.value() - now);
 
-            maxRemaining = std::max(maxRemaining, remaining);
+                if (remaining.count() > 0) {
+                    maxRemaining = std::max(maxRemaining, remaining);
+                }
+            }
         }
     }
 

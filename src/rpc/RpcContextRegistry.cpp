@@ -32,6 +32,7 @@ bool RpcContextRegistry::expireRequestIfNeeded(uint32_t requestId)
 {
     auto it = requests.find(requestId);
     if (it == requests.end()) {
+        SPDLOG_INFO("RPC - request not found {}", requestId);
         return true;
     }
 
@@ -39,7 +40,7 @@ bool RpcContextRegistry::expireRequestIfNeeded(uint32_t requestId)
         return false;
     }
 
-    SPDLOG_DEBUG("RPC - Expiring request {}", requestId);
+    SPDLOG_INFO("RPC - Expiring request {}", requestId);
     clearRequestLocked(requestId);
     return true;
 }
@@ -134,6 +135,7 @@ void RpcContextRegistry::registerInFlightRequest(
         ttl = kDefaultRpcRequestTtl;
     }
 
+    SPDLOG_INFO("RPC - registering inflight {}", requestId);
     requests[requestId] = InFlightRequest{
         .owner = RpcAppMsgIds{ .appId = appId, .msgId = msgId },
         .expiresAt = std::chrono::steady_clock::now() + ttl,

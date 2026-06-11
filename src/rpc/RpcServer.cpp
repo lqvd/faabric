@@ -447,7 +447,7 @@ void RpcServer::registerServiceInstance(int32_t appId, int32_t messageId)
         serviceMigrations.erase(key);
     }
 
-    SPDLOG_DEBUG("RPC - Registered service instance app={} msg={}",
+    SPDLOG_INFO("RPC - Registered service instance app={} msg={}",
                 appId,
                 messageId);
 }
@@ -462,7 +462,7 @@ void RpcServer::unregisterServiceInstance(int32_t appId, int32_t messageId)
         shutdownRequested.erase(key);
     }
 
-    SPDLOG_DEBUG("RPC - Unregistered service instance app={} msg={}",
+    SPDLOG_INFO("RPC - Unregistered service instance app={} msg={}",
                 appId,
                 messageId);
 }
