@@ -185,6 +185,9 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState() const
         }
 
         const auto& op = opIt->second;
+        pendingReq->set_method(op.method);
+        pendingReq->set_payload(op.payload);
+        pendingReq->set_retrycount(op.retryCount);
 
         if (op.ready) {
             pendingReq->set_cachedresponse(op.response.payload());
@@ -247,6 +250,10 @@ void RpcContext::deserializeMigrationState(
             getOrCreateTransportLocked(chIt->second);
 
             RpcOp op;
+            op.channelId = channelId;
+            op.method = pendingReq.method();
+            op.payload = pendingReq.payload();
+            op.retryCount = pendingReq.retrycount();
             if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
                 op.ready = true;
                 op.response.set_requestid(requestId);
@@ -338,6 +345,12 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         requestId = nextRequestId.fetch_add(1, std::memory_order_relaxed);
 
         RpcOp op;
+        op.channelId = channelId;
+        op.method = method;
+        op.payload.assign(
+        reinterpret_cast<const char*>(reqBuffer),
+        static_cast<size_t>(reqLength));
+
         if (timeoutMs >= 0) {
             op.deadline =
               std::chrono::steady_clock::now() +
@@ -506,20 +519,168 @@ bool RpcContext::getResponse(uint32_t requestId, faabric::RpcResponse& out)
     return true;
 }
 
+
+static bool isRetryableStaleTargetUnavailable(
+  const faabric::RpcResponse& resp)
+{
+    return resp.statuscode() == Rpc_StatusCode::UNAVAILABLE &&
+           resp.errormessage() == "Target service instance not available";
+}
+
 void RpcContext::onResponseReceived(const faabric::RpcResponse& resp)
 {
-    faabric::util::ScopedLock lock(mx);
+    std::optional<RpcOp> retryOp;
 
-    auto it = ops.find(resp.requestid());
-    if (it == ops.end()) {
-        SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
+    {
+        faabric::util::ScopedLock lock(mx);
+
+        auto it = ops.find(resp.requestid());
+        if (it == ops.end()) {
+            SPDLOG_WARN("RPC - Response for unknown request {}", resp.requestid());
+            return;
+        }
+
+        if (isRetryableStaleTargetUnavailable(resp) &&
+            it->second.retryCount == 0 &&
+            !it->second.method.empty()) {
+
+            it->second.retryCount++;
+            retryOp = it->second;
+
+            SPDLOG_WARN("RPC - Response {} was stale-target UNAVAILABLE; "
+                        "will re-resolve and retry once",
+                        resp.requestid());
+        } else {
+            it->second.response = resp;
+            it->second.ready = true;
+
+            SPDLOG_DEBUG("RPC - Received final response for {} status={}",
+                         resp.requestid(),
+                         resp.statuscode());
+            return;
+        }
+    }
+
+    retryUnaryAfterUnavailable(resp.requestid(), retryOp.value());
+}
+
+// A dirty copy of startUnary.
+// TODO: factor out common bits...
+void RpcContext::retryUnaryAfterUnavailable(uint32_t requestId,
+                                            const RpcOp& retryOp)
+{
+    std::shared_ptr<RpcTransportClient> transport;
+    int32_t targetAppId = 0;
+    int32_t targetMessageId = 0;
+    std::string targetHost;
+    std::string targetUri;
+
+    {
+        faabric::util::ScopedLock lock(mx);
+
+        auto chIt = channels.find(retryOp.channelId);
+        if (chIt == channels.end()) {
+            auto opIt = ops.find(requestId);
+            if (opIt != ops.end()) {
+                opIt->second.ready = true;
+                opIt->second.response.set_requestid(requestId);
+                opIt->second.response.set_statuscode(
+                  Rpc_StatusCode::UNAVAILABLE);
+                opIt->second.response.set_errormessage(
+                  "retry failed: channel disappeared");
+            }
+            return;
+        }
+
+        targetUri = chIt->second.targetUri;
+    }
+
+    auto endpoint = reresolveChannel(retryOp.channelId, targetUri);
+    if (!endpoint.has_value()) {
+        faabric::util::ScopedLock lock(mx);
+
+        auto opIt = ops.find(requestId);
+        if (opIt != ops.end()) {
+            opIt->second.ready = true;
+            opIt->second.response.set_requestid(requestId);
+            opIt->second.response.set_statuscode(
+              Rpc_StatusCode::UNAVAILABLE);
+            opIt->second.response.set_errormessage(
+              "retry failed: service re-resolution failed");
+        }
+
         return;
     }
 
-    it->second.response = resp;
-    it->second.ready = true;
+    {
+        faabric::util::ScopedLock lock(mx);
 
-    SPDLOG_DEBUG("RPC - Received response for {}", resp.requestid());
+        auto chIt = channels.find(retryOp.channelId);
+        if (chIt == channels.end()) {
+            auto opIt = ops.find(requestId);
+            if (opIt != ops.end()) {
+                opIt->second.ready = true;
+                opIt->second.response.set_requestid(requestId);
+                opIt->second.response.set_statuscode(
+                  Rpc_StatusCode::UNAVAILABLE);
+                opIt->second.response.set_errormessage(
+                  "retry failed: channel disappeared after re-resolution");
+            }
+            return;
+        }
+
+        const ChannelInfo& info = chIt->second;
+        transport = getOrCreateTransportLocked(info);
+        targetAppId = info.targetAppId;
+        targetMessageId = info.targetMessageId;
+        targetHost = info.targetHost;
+    }
+
+    const auto& cfg = faabric::util::getSystemConfig();
+
+    faabric::RpcRequest req;
+    req.set_requestid(requestId);
+    req.set_method(retryOp.method);
+    req.set_payload(retryOp.payload);
+    req.set_targetappid(targetAppId);
+    req.set_targetmessageid(targetMessageId);
+    req.set_replyhost(cfg.endpointHost);
+    req.set_replyport(RPC_ASYNC_PORT);
+
+    try {
+        transport->asyncSendRequest(requestId, req);
+
+        getRpcTracker().recordDependency(ownerAppId,
+                                         ownerMsgId,
+                                         targetAppId,
+                                         targetMessageId,
+                                         cfg.endpointHost,
+                                         targetHost);
+
+        SPDLOG_WARN("RPC - Retried stale-target request {} after re-resolving "
+                    "{} to app={} msg={} host={}",
+                    requestId,
+                    targetUri,
+                    targetAppId,
+                    targetMessageId,
+                    targetHost);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("RPC - Retry after re-resolution failed for req={}: {}",
+                     requestId,
+                     e.what());
+
+        faabric::util::ScopedLock lock(mx);
+
+        auto opIt = ops.find(requestId);
+        if (opIt != ops.end()) {
+            opIt->second.ready = true;
+            opIt->second.response.set_requestid(requestId);
+            opIt->second.response.set_statuscode(
+              Rpc_StatusCode::UNAVAILABLE);
+            opIt->second.response.set_errormessage(
+              "retry after re-resolution failed");
+        }
+    }
 }
 
 // -----------------------------------

@@ -269,6 +269,9 @@ message RpcMigrationState {
         int32 cachedStatusCode = 3;
         bytes cachedResponse = 4;
         int64 timeoutremaining = 5;
+        string method = 6;
+        bytes payload = 7;
+        int32 retryCount = 8;
     }
 
     string originHost = 1;

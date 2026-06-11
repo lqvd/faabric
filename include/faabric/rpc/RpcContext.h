@@ -34,8 +34,12 @@ struct RpcOp
     bool ready = false;
     faabric::RpcResponse response;
     std::optional<std::chrono::steady_clock::time_point> deadline;
-};
 
+    int32_t channelId = 0;
+    std::string method;
+    std::string payload;
+    int32_t retryCount = 0;
+};
 class RpcContext : public std::enable_shared_from_this<RpcContext>
 {
   public:
@@ -123,6 +127,9 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     
     std::optional<faabric::planner::ServiceEndpoint> reresolveChannel(
       int32_t channelId, const std::string& targetUri);
+
+    void retryUnaryAfterUnavailable(uint32_t requestId,
+                                    const RpcOp& retryOp);
 };
 
 } // namespace faabric::rpc

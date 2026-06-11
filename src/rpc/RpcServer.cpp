@@ -117,9 +117,9 @@ void RpcServer::recvInvoke(std::span<const uint8_t> buffer)
                     e.what());
 
         sendErrorResponseToReplyHost(
-        req,
-        Rpc_StatusCode::UNAVAILABLE,
-        "Target service instance not available");
+            req,
+            Rpc_StatusCode::UNAVAILABLE,
+            "Target service instance not available");
     }
 }
 
@@ -505,26 +505,27 @@ void RpcServer::enqueueInvocation(int32_t appId,
             auto& migration = migIt->second;
 
             const auto now = std::chrono::steady_clock::now();
+
             if (now >= migration.expiry) {
-                // Only reclaim if the migration actually completed: backlog drained
-                // and a destination recorded. Otherwise the fetch never arrived and
-                // the backlog must survive for a late INVOKE_FETCH.
-                if (migration.pending.empty()
-                      && migration.destination.has_value()) {
+                if (migration.pending.empty() && migration.destination.has_value()) {
                     serviceMigrations.erase(migIt);
                     throw std::runtime_error(
                     fmt::format("Expired migration state for app={} msg={}",
                                 appId, messageId));
                 }
 
-                // Extend window.
-                migration.expiry = now + std::chrono::milliseconds(kRpcTimeoutMs);
+                migration.expiry =
+                now + std::chrono::milliseconds(kServiceForwardingTtlMs);
             }
 
             if (!migration.destination.has_value()) {
                 migration.pending.emplace_back(std::move(invocation));
                 return;
             }
+
+            // Important: active stale traffic means the tombstone is still needed.
+            migration.expiry =
+            now + std::chrono::milliseconds(kServiceForwardingTtlMs);
 
             forwardTarget = migration.destination.value();
             forwardReq = pendingInvocationToRpcRequest(invocation);
@@ -652,7 +653,7 @@ void RpcServer::beginServiceQueueMigration(int32_t appId,
         pendingSize = migration.pending.size();
     }
 
-    SPDLOG_DEBUG("RPC - Service app={} msg={} entered pending pull with {} "
+    SPDLOG_INFO("RPC - Service app={} msg={} entered pending pull with {} "
                 "pending invocations",
                 appId,
                 messageId,
