@@ -19,7 +19,7 @@ class RpcContext;
 using namespace std::literals::chrono_literals;
 
 static constexpr int32_t kTimeoutTtlMultiplier = 2;
-static constexpr std::chrono::milliseconds kDefaultRpcRequestTtl = 1200000;
+static constexpr std::chrono::milliseconds kDefaultRpcRequestTtl{ 1200000 };
 
 struct RpcAppMsgIds
 {
@@ -31,7 +31,6 @@ struct RpcAppMsgIds
         return appId == other.appId && msgId == other.msgId;
     }
 };
-
 struct RpcAppMsgIdsHash
 {
     size_t operator()(const RpcAppMsgIds& k) const
@@ -42,15 +41,32 @@ struct RpcAppMsgIdsHash
     }
 };
 
+// For forwarding responses.
 struct PendingFetch
 {
     std::string host;
     int port = 0;
 };
 
+enum class ResponseDisposition {
+    Drop,     // unknown/expired request — nothing to do
+    Local,    // deliver to a local context (context returned)
+    Forward,  // forward to a pending-fetch target (fetch returned)
+    Cached,   // no context, no fetch yet — response was cached for a later FETCH
+};
+
+struct ResponseRoute {
+    ResponseDisposition disposition;
+    std::shared_ptr<RpcContext> context;  // set iff Local
+    PendingFetch fetch;                   // set iff Forward
+};
+
 class RpcContextRegistry
 {
   public:
+    ResponseRoute routeResponse(uint32_t requestId,
+                            const faabric::RpcResponse& resp);
+
     // -----------------------------------
     // context mappings
     // -----------------------------------

@@ -208,41 +208,51 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
     const uint32_t requestId = resp.requestid();
     auto& registry = getRpcContextRegistry();
 
-    if (auto ctx = registry.getContextForRequest(requestId)) {
-        SPDLOG_DEBUG("RPC - Delivering response {} to local context", requestId);
-        ctx->onResponseReceived(resp);
-        return;
-    }
+    ResponseRoute route = registry.routeResponse(requestId, resp);
 
-    if (!registry.hasRequest(requestId)) {
-        SPDLOG_WARN("RPC - Response {} undeliverable; unknown/expired request",
-                    requestId);
-        return;
-    }
-
-    auto pendingFetch = registry.consumePendingFetch(requestId);
-    if (!pendingFetch.has_value()) {
-        SPDLOG_DEBUG("RPC - Response {} arrived before FETCH; caching", requestId);
-        registry.cacheResponse(requestId, resp);
-        return;
-    }
-
-    SPDLOG_DEBUG("RPC - Response {} matched FETCH; sending to {}:{}",
-                requestId,
-                pendingFetch->host,
-                pendingFetch->port);
-
-    try {
-        auto client =
-          getOrCreateTransport(pendingFetch->host, pendingFetch->port);
-        client->asyncSendResponse(resp);
-        registry.clearRequest(requestId);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
-                     requestId, pendingFetch->host, pendingFetch->port,
-                     e.what());
-        evictTransport(pendingFetch->host, pendingFetch->port);
-        registry.cacheResponse(requestId, resp);
+    switch (route.disposition) {
+        case ResponseDisposition::Drop: {
+            SPDLOG_WARN("RPC - Response {} undeliverable; unknown/expired "
+                        "request",
+                        requestId);
+            return;
+        }
+        case ResponseDisposition::Local: {
+            SPDLOG_DEBUG("RPC - Delivering response {} to local context",
+                         requestId);
+            // Outside the registry lock on purpose: onResponseReceived may
+            // re-resolve/retry and re-enter the registry.
+            route.context->onResponseReceived(resp);
+            return;
+        }
+        case ResponseDisposition::Cached: {
+            SPDLOG_DEBUG("RPC - Response {} arrived before FETCH; cached",
+                         requestId);
+            return;
+        }
+        case ResponseDisposition::Forward: {
+            SPDLOG_DEBUG("RPC - Response {} matched FETCH; sending to {}:{}",
+                         requestId,
+                         route.fetch.host,
+                         route.fetch.port);
+            try {
+                auto client = getOrCreateTransport(route.fetch.host,
+                                                   route.fetch.port);
+                client->asyncSendResponse(resp);
+                registry.clearRequest(requestId);
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
+                             requestId,
+                             route.fetch.host,
+                             route.fetch.port,
+                             e.what());
+                evictTransport(route.fetch.host, route.fetch.port);
+                // Re-cache so a subsequent FETCH retry can pick it up. This
+                // re-checks expiry internally, which is correct here since
+                // we're now in a fresh critical section after I/O failure.
+                registry.cacheResponse(requestId, resp);
+            }
+        }
     }
 }
 

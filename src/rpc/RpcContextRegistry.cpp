@@ -262,6 +262,42 @@ RpcContextRegistry::consumePendingFetch(uint32_t requestId)
 // reset mappings
 // -----------------------------------
 
+ResponseRoute RpcContextRegistry::routeResponse(
+  uint32_t requestId,
+  const faabric::RpcResponse& resp)
+{
+    faabric::util::FullLock lock(mx);
+
+    // If the request is unknown or expired, drop.
+    if (expireRequestIfNeeded(requestId)) {
+        return { ResponseDisposition::Drop, nullptr, {} };
+    }
+
+    // The request is live. Try to deliver locally.
+    auto reqIt = requests.find(requestId);
+    auto ctxIt = contextByKey.find(reqIt->second.owner);
+    if (ctxIt != contextByKey.end()) {
+        // Return the context; the caller invokes onResponseReceived OUTSIDE
+        // the lock to avoid re-entering the registry / lock-order inversion
+        // with the context's own mutex.
+        return { ResponseDisposition::Local, ctxIt->second, {} };
+    }
+
+    // No local context. If the destination's FETCH already arrived, forward now.
+    auto fIt = pendingFetches.find(requestId);
+    if (fIt != pendingFetches.end()) {
+        PendingFetch fetch = std::move(fIt->second);
+        pendingFetches.erase(fIt);
+        return { ResponseDisposition::Forward, nullptr, std::move(fetch) };
+    }
+
+    // Response beat the FETCH. Cache it for the later FETCH to consume.
+    // We are past expiry and the request is live, so this insert is safe
+    // (no need to re-check via cacheResponse, which would re-lock).
+    cachedResponses[requestId] = resp;
+    return { ResponseDisposition::Cached, nullptr, {} };
+}
+
 void RpcContextRegistry::reset()
 {
     faabric::util::FullLock lock(mx);
