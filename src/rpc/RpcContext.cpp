@@ -693,7 +693,6 @@ void RpcContext::setupForwarding(const std::string& newHost,
     namespace chrono = std::chrono;
     std::unordered_set<uint32_t> pendingIds;
     chrono::milliseconds maxRemaining{ 0 };
-    bool anyUnbounded = false;
 
     {
         faabric::util::ScopedLock lock(mx);
@@ -704,11 +703,6 @@ void RpcContext::setupForwarding(const std::string& newHost,
             if (op.ready) continue;
 
             pendingIds.insert(reqId);
-            if (!op.deadline.has_value()) {
-                anyUnbounded = true;
-                continue;
-            }
-
             auto remaining = chrono::duration_cast<chrono::milliseconds>(
               op.deadline.value() - now);
 
@@ -716,10 +710,7 @@ void RpcContext::setupForwarding(const std::string& newHost,
         }
     }
 
-    auto ttl = maxRemaining * kTimeoutTtlMultiplier;
-    if (anyUnbounded) {
-        ttl = std::max(ttl, defaultTtl);
-    }
+    auto ttl = std::max(maxRemaining * kTimeoutTtlMultiplier, defaultTtl);
 
     auto& reg = getRpcContextRegistry();
 
