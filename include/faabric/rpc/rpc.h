@@ -47,6 +47,8 @@ int32_t __faasm_rpc_wait_migratable(uint32_t requestId,
                                     int32_t wasmResumeTarget,
                                     int32_t frameOffset);
 
+int32_t __faasm_rpc_wait(uint32_t requestId);
+
 int32_t __faasm_rpc_get_response(uint32_t requestId,
                                  int32_t* outRespBufOffset,
                                  int32_t* outRespLen,
@@ -72,6 +74,15 @@ int32_t __faasm_rpc_get_request(int32_t wasmResumeTarget,
                                 int32_t* outReplyHostOffset,
                                 int32_t* outReplyHostLen,
                                 int32_t* outReplyPort);
+
+int32_t __faasm_rpc_get_request_nomig(uint32_t* outRequestId,
+                                     int32_t* outMethodOffset,
+                                     int32_t* outMethodLen,
+                                     int32_t* outPayloadOffset,
+                                     int32_t* outPayloadLen,
+                                     int32_t* outReplyHostOffset,
+                                     int32_t* outReplyHostLen,
+                                     int32_t* outReplyPort);
 
 #ifdef __cplusplus
 }
