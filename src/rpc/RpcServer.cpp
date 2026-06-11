@@ -515,7 +515,7 @@ void RpcServer::enqueueInvocation(int32_t appId,
                 }
 
                 migration.expiry =
-                now + std::chrono::milliseconds(kServiceForwardingTtlMs);
+                  now + std::chrono::milliseconds(kServiceForwardingTtlMs);
             }
 
             if (!migration.destination.has_value()) {

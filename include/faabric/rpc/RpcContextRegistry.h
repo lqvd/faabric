@@ -19,7 +19,7 @@ class RpcContext;
 using namespace std::literals::chrono_literals;
 
 static constexpr int32_t kTimeoutTtlMultiplier = 2;
-static constexpr std::chrono::milliseconds kDefaultRpcRequestTtl = 5min;
+static constexpr std::chrono::milliseconds kDefaultRpcRequestTtl = 1200000;
 
 struct RpcAppMsgIds
 {
