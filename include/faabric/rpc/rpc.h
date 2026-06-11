@@ -47,6 +47,8 @@ int32_t __faasm_rpc_wait_migratable(uint32_t requestId,
                                     int32_t wasmResumeTarget,
                                     int32_t frameOffset);
 
+int32_t __faasm_rpc_wait(uint32_t requestId);
+
 int32_t __faasm_rpc_get_response(uint32_t requestId,
                                  int32_t* outRespBufOffset,
                                  int32_t* outRespLen,
