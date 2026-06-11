@@ -94,13 +94,6 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     // Called by the RPC server thread when a response arrives over the network
     void onResponseReceived(const faabric::RpcResponse& resp);
 
-    // ------
-    // Forwarding
-    // ------
-    void setupForwarding(const std::string& newHost,
-                         std::chrono::milliseconds defaultTtl
-                            = kDefaultForwardingTtl);
-
   private:
     std::shared_ptr<RpcServiceResolver> resolver;
 
@@ -130,6 +123,12 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
 
     void retryUnaryAfterUnavailable(uint32_t requestId,
                                     const RpcOp& retryOp);
+
+    // ------
+    // Forwarding
+    // ------
+    void setupForwarding(std::chrono::milliseconds defaultTtl
+                            = kDefaultForwardingTtl);
 };
 
 } // namespace faabric::rpc
