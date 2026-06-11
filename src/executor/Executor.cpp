@@ -434,16 +434,17 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                       msg.appid(),
                       msg.id());
 
+                    if (!rpcMigCtx.originhost().empty() &&
+                        rpcMigCtx.originhost() != conf.endpointHost) {
+                        faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
+                        rpcMigCtx.originhost(),
+                        msg.appid(),
+                        msg.id());
+                    }
+
                     faabric::planner::getPlannerClient().notifyServiceReady(
                       msg.rpcservice(), msg.appid(), msg.id());
 
-                    if (!rpcMigCtx.originhost().empty() &&
-                          rpcMigCtx.originhost() != conf.endpointHost) {
-                        faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
-                          rpcMigCtx.originhost(),
-                          msg.appid(),
-                          msg.id());
-                    }
                 }
 
                 SPDLOG_INFO("RPC - Deserialised migration state for msg {}", msg.id());
