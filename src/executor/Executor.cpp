@@ -385,14 +385,16 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
             faabric::rpc::getRpcContextRegistry().registerContext(
                 msg.appid(), msg.id(), rpcCtx);
 
-            faabric::rpc::getRpcServer().registerServiceInstance(
-                msg.appid(),
-                msg.id());
+            if (!isMigration) {
+                faabric::rpc::getRpcServer().registerServiceInstance(
+                    msg.appid(),
+                    msg.id());
 
-            faabric::planner::getPlannerClient().notifyServiceReady(
-                msg.rpcservice(),
-                msg.appid(),
-                msg.id());
+                faabric::planner::getPlannerClient().notifyServiceReady(
+                    msg.rpcservice(),
+                    msg.appid(),
+                    msg.id());
+            }
         }
 
         // Execute the task
