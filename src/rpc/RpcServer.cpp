@@ -176,7 +176,6 @@ void RpcServer::recvFetch(std::span<const uint8_t> buffer)
     try {
         auto client = getOrCreateTransport(fetch.replyhost(), fetch.replyport());
         client->asyncSendResponse(cached.value());
-        registry.clearRequest(requestId);
     } catch (const std::exception& e) {
         SPDLOG_ERROR("RPC - Failed to send cached response {} to {}:{}: {}",
                      requestId, fetch.replyhost(), fetch.replyport(), e.what());
