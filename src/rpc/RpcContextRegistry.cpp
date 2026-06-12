@@ -2,6 +2,7 @@
 
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/rpc/RpcContext.h>
+#include <faabric/util/config.h>
 #include <faabric/util/locks.h>
 #include <faabric/util/logging.h>
 
@@ -188,6 +189,12 @@ void RpcContextRegistry::registerInFlightRequestUnlocked(
         ttl = kDefaultRpcRequestTtl;
     }
 
+    SPDLOG_INFO("RPC - register request {} -> app={} msg={} host={}",
+            requestId,
+            appId,
+            msgId,
+            faabric::util::getSystemConfig().endpointHost);
+
     requests[requestId] = InFlightRequest{
         .owner = RpcAppMsgIds{ .appId = appId, .msgId = msgId },
         .expiresAt = std::chrono::steady_clock::now() + ttl,
@@ -322,7 +329,12 @@ ResponseRoute RpcContextRegistry::routeResponse(
     faabric::util::FullLock lock(mx);
 
     if (expireRequestIfNeeded(requestId)) {
-        SPDLOG_INFO("RPC - Dropping response to {}", requestId);
+        SPDLOG_WARN("RPC - routeResponse miss req={} host={} knownRequests={} cached={} pendingFetch={}",
+            resp.requestid(),
+            faabric::util::getSystemConfig().endpointHost,
+            requests.size(),
+            cachedResponses.contains(resp.requestid()),
+            pendingFetches.contains(resp.requestid()));
         return { ResponseDisposition::Drop, nullptr, {} };
     }
 
