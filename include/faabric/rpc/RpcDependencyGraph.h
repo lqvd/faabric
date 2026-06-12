@@ -58,9 +58,9 @@ class RpcDependencyGraph
     mutable std::shared_mutex mx;
 
     static constexpr uint64_t MIN_OBSERVATIONS = 2;
-    static constexpr uint64_t MIN_BENEFIT = 2;
-    static constexpr auto EDGE_TTL = std::chrono::seconds(10);
-    static constexpr auto COOLDOWN = std::chrono::seconds(5);
+    static constexpr uint64_t MIN_BENEFIT = 1;
+    static constexpr auto EDGE_TTL = std::chrono::seconds(3);
+    static constexpr auto COOLDOWN = std::chrono::seconds(2);
 
     // -----------------------------------
     // structures
