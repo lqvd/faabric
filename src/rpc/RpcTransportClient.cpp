@@ -62,8 +62,8 @@ void RpcTransportClient::asyncSendRequest(uint32_t requestId,
 {
     faabric::RpcRequest req = reqIn;
     req.set_requestid(requestId);
-    req.set_replyhost(faabric::util::getSystemConfig().endpointHost);
-    req.set_replyport(asyncPort);
+    req.set_replyhost(req.replyhost());
+    req.set_replyport(req.replyport());
 
     std::string buffer;
     if (!req.SerializeToString(&buffer)) {
