@@ -27,7 +27,7 @@ class RpcServerDeliveryFixture;
 
 namespace faabric::rpc {
 
-static constexpr int kRpcTimeoutMs = 5000;
+static constexpr int kRpcTimeoutMs = 120000;
 static constexpr int kServiceForwardingTtlMs = 120000;
 
 // -----------------------------------
