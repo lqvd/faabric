@@ -97,7 +97,7 @@ std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
     return ctxIt == contextByKey.end() ? nullptr : ctxIt->second;
 }
 
-vvoid RpcContextRegistry::registerRestoredContext(
+void RpcContextRegistry::registerRestoredContext(
   int32_t appId,
   int32_t msgId,
   std::shared_ptr<RpcContext> ctx,
