@@ -223,7 +223,6 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
                 auto client = getOrCreateTransport(route.fetch.host,
                                                    route.fetch.port);
                 client->asyncSendResponse(resp);
-                registry.clearRequest(requestId);
             } catch (const std::exception& e) {
                 SPDLOG_ERROR("RPC - Failed to send response {} to {}:{}: {}",
                              requestId,

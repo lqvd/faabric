@@ -143,6 +143,7 @@ bool RpcContextRegistry::hasRequest(uint32_t requestId)
 
 void RpcContextRegistry::clearRequest(uint32_t requestId)
 {
+    SPDLOG_INFO("Clearing request for {}", requestId);
     faabric::util::FullLock lock(mx);
     clearRequestLocked(requestId);
 }
@@ -246,7 +247,7 @@ ResponseRoute RpcContextRegistry::routeResponse(
     faabric::util::FullLock lock(mx);
 
     if (expireRequestIfNeeded(requestId)) {
-        SPDLOG_INFO("RPC - Dropping request {}", requestId);
+        SPDLOG_INFO("RPC - Dropping response to {}", requestId);
         return { ResponseDisposition::Drop, nullptr, {} };
     }
 
