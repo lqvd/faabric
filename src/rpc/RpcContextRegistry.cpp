@@ -113,7 +113,6 @@ void RpcContextRegistry::registerInFlightRequest(
         ttl = kDefaultRpcRequestTtl;
     }
 
-    SPDLOG_INFO("RPC - registering inflight {}", requestId);
     requests[requestId] = InFlightRequest{
         .owner = RpcAppMsgIds{ .appId = appId, .msgId = msgId },
         .expiresAt = std::chrono::steady_clock::now() + ttl,
