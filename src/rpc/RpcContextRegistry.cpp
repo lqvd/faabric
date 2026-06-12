@@ -145,7 +145,7 @@ void RpcContextRegistry::clearRequest(uint32_t requestId)
 {
     SPDLOG_INFO("Clearing request for {}", requestId);
     faabric::util::FullLock lock(mx);
-    clearRequestLocked(requestId);
+    // clearRequestLocked(requestId);
 }
 
 std::optional<RpcAppMsgIds> RpcContextRegistry::getAppMsgIdForRequest(
