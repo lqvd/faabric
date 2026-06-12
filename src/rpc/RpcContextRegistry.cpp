@@ -76,8 +76,6 @@ std::shared_ptr<RpcContext> RpcContextRegistry::getContext(
 
 void RpcContextRegistry::removeContext(int32_t appId, int32_t msgId)
 {
-    faabric::util::FullLock lock(mx);
-
     RpcAppMsgIds key{ .appId = appId, .msgId = msgId };
     contextByKey.erase(key);
 
@@ -126,8 +124,6 @@ void RpcContextRegistry::refreshRequestTtl(
   uint32_t requestId,
   std::chrono::milliseconds ttl)
 {
-    faabric::util::FullLock lock(mx);
-
     auto it = requests.find(requestId);
     if (it == requests.end()) {
         return;
@@ -250,22 +246,20 @@ ResponseRoute RpcContextRegistry::routeResponse(
 {
     faabric::util::FullLock lock(mx);
 
-    // If the request is unknown or expired, drop.
     if (expireRequestIfNeeded(requestId)) {
+        SPDLOG_INFO("RPC - Dropping request {}", requestId);
         return { ResponseDisposition::Drop, nullptr, {} };
     }
 
-    // The request is live. Try to deliver locally.
     auto reqIt = requests.find(requestId);
     auto ctxIt = contextByKey.find(reqIt->second.owner);
+
     if (ctxIt != contextByKey.end()) {
-        // Return the context; the caller invokes onResponseReceived OUTSIDE
-        // the lock to avoid re-entering the registry / lock-order inversion
-        // with the context's own mutex.
-        return { ResponseDisposition::Local, ctxIt->second, {} };
+        SPDLOG_INFO("RPC - Delivering locally {}", requestId);
+        ctxIt->second->onResponseReceived(resp);
+        return { ResponseDisposition::Local, nullptr, {} };
     }
 
-    // No local context. If the destination's FETCH already arrived, forward now.
     auto fIt = pendingFetches.find(requestId);
     if (fIt != pendingFetches.end()) {
         PendingFetch fetch = std::move(fIt->second);
@@ -273,11 +267,14 @@ ResponseRoute RpcContextRegistry::routeResponse(
         return { ResponseDisposition::Forward, nullptr, std::move(fetch) };
     }
 
-    // Response beat the FETCH. Cache it for the later FETCH to consume.
-    // We are past expiry and the request is live, so this insert is safe
-    // (no need to re-check via cacheResponse, which would re-lock).
     cachedResponses[requestId] = resp;
     return { ResponseDisposition::Cached, nullptr, {} };
+}
+
+
+std::shared_mutex& RpcContextRegistry::getMutex()
+{
+    return mx;
 }
 
 void RpcContextRegistry::reset()

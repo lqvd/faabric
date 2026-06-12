@@ -129,6 +129,10 @@ class RpcContextRegistry
 
     void reset();
 
+
+
+    std::shared_mutex& getMutex();
+
   private:
     struct InFlightRequest
     {

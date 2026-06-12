@@ -211,25 +211,10 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
     ResponseRoute route = registry.routeResponse(requestId, resp);
 
     switch (route.disposition) {
-        case ResponseDisposition::Drop: {
-            SPDLOG_WARN("RPC - Response {} undeliverable; unknown/expired "
-                        "request",
-                        requestId);
+        case ResponseDisposition::Drop: 
+        case ResponseDisposition::Local:
+        case ResponseDisposition::Cached:
             return;
-        }
-        case ResponseDisposition::Local: {
-            SPDLOG_DEBUG("RPC - Delivering response {} to local context",
-                         requestId);
-            // Outside the registry lock on purpose: onResponseReceived may
-            // re-resolve/retry and re-enter the registry.
-            route.context->onResponseReceived(resp);
-            return;
-        }
-        case ResponseDisposition::Cached: {
-            SPDLOG_DEBUG("RPC - Response {} arrived before FETCH; cached",
-                         requestId);
-            return;
-        }
         case ResponseDisposition::Forward: {
             SPDLOG_DEBUG("RPC - Response {} matched FETCH; sending to {}:{}",
                          requestId,

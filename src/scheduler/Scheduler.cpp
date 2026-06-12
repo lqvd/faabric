@@ -321,15 +321,6 @@ void Scheduler::executeBatch(std::shared_ptr<faabric::BatchExecuteRequest> req)
                     localMsg.set_rpcservice(
                       localMsg.user() + "/" + localMsg.function());
                 }
-
-                faabric::rpc::getRpcServer().registerServiceInstance(
-                    localMsg.appid(),
-                    localMsg.id());
-
-                faabric::planner::getPlannerClient().notifyServiceReady(
-                    localMsg.rpcservice(),
-                    localMsg.appid(),
-                    localMsg.id());
             }
 
             exec->executeTasks({ i }, req);

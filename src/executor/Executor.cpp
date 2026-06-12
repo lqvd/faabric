@@ -384,6 +384,15 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
               std::make_shared<faabric::rpc::RpcContext>(msg.appid(), msg.id());
             faabric::rpc::getRpcContextRegistry().registerContext(
                 msg.appid(), msg.id(), rpcCtx);
+
+            faabric::rpc::getRpcServer().registerServiceInstance(
+                msg.appid(),
+                msg.id());
+
+            faabric::planner::getPlannerClient().notifyServiceReady(
+                msg.rpcservice(),
+                msg.appid(),
+                msg.id());
         }
 
         // Execute the task
@@ -437,9 +446,9 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                     if (!rpcMigCtx.originhost().empty() &&
                         rpcMigCtx.originhost() != conf.endpointHost) {
                         faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
-                        rpcMigCtx.originhost(),
-                        msg.appid(),
-                        msg.id());
+                          rpcMigCtx.originhost(),
+                          msg.appid(),
+                          msg.id());
                     }
 
                     faabric::planner::getPlannerClient().notifyServiceReady(
@@ -480,6 +489,7 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                 }
             } else if (msg.isrpc()) {
                 auto& registry = faabric::rpc::getRpcContextRegistry();
+                faabric::util::FullLock lock(registry.getMutex());
                 registry.removeContext(msg.appid(), msg.id());
             }
         } catch (const faabric::util::FunctionFrozenException& ex) {

@@ -364,6 +364,9 @@ uint32_t RpcContext::startUnary(int32_t channelId,
         requestToChannel.emplace(requestId, channelId);
     }
 
+    getRpcContextRegistry().registerInFlightRequest(
+      requestId, ownerAppId, ownerMsgId);
+
     const auto& cfg = faabric::util::getSystemConfig();
 
     auto buildReq = [&](int32_t appId, int32_t msgId) {
