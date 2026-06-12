@@ -33,7 +33,7 @@ bool RpcContextRegistry::expireRequestIfNeeded(uint32_t requestId)
 {
     auto it = requests.find(requestId);
     if (it == requests.end()) {
-        SPDLOG_INFO("RPC - request not found {}", requestId);
+        SPDLOG_DEBUG("RPC - request not found {}", requestId);
         return true;
     }
 
@@ -41,7 +41,7 @@ bool RpcContextRegistry::expireRequestIfNeeded(uint32_t requestId)
         return false;
     }
 
-    SPDLOG_INFO("RPC - Expiring request {}", requestId);
+    SPDLOG_DEBUG("RPC - Expiring request {}", requestId);
     clearRequestLocked(requestId);
     return true;
 }
@@ -148,7 +148,7 @@ void RpcContextRegistry::registerRestoredContext(
               ttl.count());
         }
 
-        SPDLOG_INFO(
+        SPDLOG_DEBUG(
           "RPC - Registered restored context app={} msg={} with {} pending requests",
           appId,
           msgId,
@@ -157,7 +157,7 @@ void RpcContextRegistry::registerRestoredContext(
 
     // Deliver outside the registry lock.
     for (const auto& resp : locallyCachedResponses) {
-        SPDLOG_INFO("RPC - Delivering locally cached restored response req={}",
+        SPDLOG_DEBUG("RPC - Delivering locally cached restored response req={}",
                     resp.requestid());
         ctx->onResponseReceived(resp);
     }
@@ -189,12 +189,6 @@ void RpcContextRegistry::registerInFlightRequestUnlocked(
         ttl = kDefaultRpcRequestTtl;
     }
 
-    SPDLOG_INFO("RPC - register request {} -> app={} msg={} host={}",
-            requestId,
-            appId,
-            msgId,
-            faabric::util::getSystemConfig().endpointHost);
-
     requests[requestId] = InFlightRequest{
         .owner = RpcAppMsgIds{ .appId = appId, .msgId = msgId },
         .expiresAt = std::chrono::steady_clock::now() + ttl,
@@ -225,9 +219,8 @@ bool RpcContextRegistry::hasRequest(uint32_t requestId)
 
 void RpcContextRegistry::clearRequest(uint32_t requestId)
 {
-    SPDLOG_INFO("Clearing request for {}", requestId);
     faabric::util::FullLock lock(mx);
-    // clearRequestLocked(requestId);
+    clearRequestLocked(requestId);
 }
 
 std::optional<RpcAppMsgIds> RpcContextRegistry::getAppMsgIdForRequest(
@@ -342,7 +335,7 @@ ResponseRoute RpcContextRegistry::routeResponse(
     auto ctxIt = contextByKey.find(reqIt->second.owner);
 
     if (ctxIt != contextByKey.end()) {
-        SPDLOG_INFO("RPC - Delivering locally {}", requestId);
+        SPDLOG_DEBUG("RPC - Delivering locally {}", requestId);
         ctxIt->second->onResponseReceived(resp);
         return { ResponseDisposition::Local, nullptr, {} };
     }

@@ -176,7 +176,6 @@ faabric::RpcMigrationState RpcContext::serializeMigrationState()
     const auto now = std::chrono::steady_clock::now();
 
     for (const auto& [reqId, channelId] : requestToChannel) {
-        SPDLOG_INFO("RPC - Pending request {}", reqId);
         auto* pendingReq = migrationCtx.add_pendingrequests();
         pendingReq->set_requestid(reqId);
         pendingReq->set_channelid(channelId);
