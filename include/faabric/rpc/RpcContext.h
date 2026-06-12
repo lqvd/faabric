@@ -68,7 +68,7 @@ class RpcContext : public std::enable_shared_from_this<RpcContext>
     // Migration serialisation and deserialisation
     // ------
 
-    faabric::RpcMigrationState serializeMigrationState() const;
+    faabric::RpcMigrationState serializeMigrationState();
 
     void deserializeMigrationState(
       const faabric::RpcMigrationState& migrationCtx);

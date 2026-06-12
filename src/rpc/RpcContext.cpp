@@ -158,7 +158,7 @@ void RpcContext::clearLocal()
 // serialisation + deserialisation
 // -----------------------------------
 
-faabric::RpcMigrationState RpcContext::serializeMigrationState() const
+faabric::RpcMigrationState RpcContext::serializeMigrationState()
 {
     faabric::RpcMigrationState migrationCtx;
 
