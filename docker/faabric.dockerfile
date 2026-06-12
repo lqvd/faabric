@@ -10,7 +10,7 @@ ENV FAABRIC_DOCKER="on"
 # Put the code in place
 WORKDIR /code
 RUN git clone \
-        -b v${FAABRIC_VERSION} https://github.com/faasm/faabric \
+        -b v${FAABRIC_VERSION} https://github.com/lqvd/faabric \
     && git config --global --add safe.directory /code/faabric
 
 WORKDIR /code/faabric

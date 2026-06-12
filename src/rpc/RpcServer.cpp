@@ -207,7 +207,6 @@ void RpcServer::deliverResponse(const faabric::RpcResponse& resp)
 {
     const uint32_t requestId = resp.requestid();
     auto& registry = getRpcContextRegistry();
-
     ResponseRoute route = registry.routeResponse(requestId, resp);
 
     switch (route.disposition) {
