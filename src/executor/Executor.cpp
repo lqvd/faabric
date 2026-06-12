@@ -377,29 +377,67 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
         // Set up context
         ExecutorContext::set(this, task.req, task.messageIndex);
 
-        if (msg.isrpc()) {
-            SPDLOG_INFO("RPC - Registering context for msg {} (isMigration={})",
-                        msg.id(), isMigration);
-            auto rpcCtx =
-              std::make_shared<faabric::rpc::RpcContext>(msg.appid(), msg.id());
-            faabric::rpc::getRpcContextRegistry().registerContext(
-                msg.appid(), msg.id(), rpcCtx);
-
-            if (!isMigration) {
-                faabric::rpc::getRpcServer().registerServiceInstance(
-                    msg.appid(),
-                    msg.id());
-
-                faabric::planner::getPlannerClient().notifyServiceReady(
-                    msg.rpcservice(),
-                    msg.appid(),
-                    msg.id());
-            }
-        }
-
         // Execute the task
         int32_t returnValue;
         try {
+            std::shared_ptr<faabric::rpc::RpcContext> rpcCtx;
+            std::optional<faabric::RpcMigrationState> rpcMigCtx;
+
+            if (msg.isrpc()) {
+                SPDLOG_INFO("RPC - Preparing context for msg {} (isMigration={})",
+                            msg.id(),
+                            isMigration);
+
+                rpcCtx =
+                std::make_shared<faabric::rpc::RpcContext>(msg.appid(), msg.id());
+
+                auto& registry = faabric::rpc::getRpcContextRegistry();
+
+                if (isMigration && !task.req->contextdata().empty()) {
+                    rpcMigCtx.emplace();
+
+                    SPDLOG_INFO("RPC - Restoring migration context for msg {} "
+                                "contextdata size={} funcptr={}",
+                                msg.id(),
+                                task.req->contextdata().size(),
+                                msg.funcptr());
+
+                    if (!rpcMigCtx->ParseFromArray(task.req->contextdata().data(),
+                                                task.req->contextdata().size())) {
+                        SPDLOG_ERROR(
+                          "RPC - Failed to parse RpcMigrationState for msg {}",
+                          msg.id());
+                        throw std::runtime_error("Failed to parse RpcMigrationState");
+                    }
+
+                    SPDLOG_INFO("RPC - Parsed migration state for msg {}: {} channels, "
+                                "{} pending requests, originHost={}",
+                                msg.id(),
+                                rpcMigCtx->channels_size(),
+                                rpcMigCtx->pendingrequests_size(),
+                                rpcMigCtx->originhost());
+
+                    // Restore the context locally first.
+                    rpcCtx->deserializeMigrationState(*rpcMigCtx);
+
+                    // Atomically publish the restored context and requestId
+                    // mappings...
+                    registry.registerRestoredContext(
+                      msg.appid(), msg.id(), rpcCtx, *rpcMigCtx);
+
+                    SPDLOG_INFO("RPC - Registered restored migration context for msg {}",
+                                msg.id());
+                } else {
+                    registry.registerContext(msg.appid(), msg.id(), rpcCtx);
+                    if (!isMigration && msg.islongrunning()) {
+                        faabric::rpc::getRpcServer().registerServiceInstance(
+                          msg.appid(), msg.id());
+                        faabric::planner::getPlannerClient().notifyServiceReady(
+                          msg.rpcservice(), msg.appid(), msg.id());
+                    }
+                }
+            }
+
             // Right before executing the task, do any kind of synchronisation
             // if the task has been migrated. Also benefit from the try/catch
             // statement in case the migration fails
@@ -408,57 +446,53 @@ void Executor::threadPoolThread(std::stop_token st, int threadPoolIdx)
                   msg);
             }
 
-            if (isMigration && msg.isrpc() && !task.req->contextdata().empty()) {
-                SPDLOG_INFO("RPC - Restoring migration context for msg {} "
-                            "contextdata size={} funcptr={}",
-                            msg.id(),
-                            task.req->contextdata().size(),
-                            msg.funcptr());
-
-                auto& registry = faabric::rpc::getRpcContextRegistry();
-                auto rpcCtx = registry.getContext(msg.appid(), msg.id());
-
-                if (!rpcCtx) {
-                    SPDLOG_ERROR("RPC - No context found for msg {} on restore",
-                                msg.id());
-                    throw std::runtime_error("No RPC context on migration restore");
-                }
-
-                faabric::RpcMigrationState rpcMigCtx;
-                if (!rpcMigCtx.ParseFromArray(task.req->contextdata().data(),
-                                              task.req->contextdata().size())) {
-                    SPDLOG_ERROR("RPC - Failed to parse RpcMigrationState for msg {}",
-                                 msg.id());
-                    throw std::runtime_error(
-                      "Failed to parse RpcMigrationState");
-                }
-
-                SPDLOG_INFO("RPC - Parsed migration state: {} channels, "
-                            "{} pending requests",
-                            rpcMigCtx.channels_size(),
-                            rpcMigCtx.pendingrequests_size());
-
-                rpcCtx->deserializeMigrationState(rpcMigCtx);
-
+            if (isMigration && msg.isrpc() && rpcMigCtx.has_value()) {
                 if (msg.islongrunning()) {
                     faabric::rpc::getRpcServer().registerServiceInstance(
-                      msg.appid(),
-                      msg.id());
+                      msg.appid(), msg.id());
 
-                    if (!rpcMigCtx.originhost().empty() &&
-                        rpcMigCtx.originhost() != conf.endpointHost) {
+                    if (!rpcMigCtx->originhost().empty() &&
+                        rpcMigCtx->originhost() != conf.endpointHost) {
                         faabric::rpc::getRpcServer().fetchMigratedServiceQueue(
-                          rpcMigCtx.originhost(),
-                          msg.appid(),
-                          msg.id());
+                          rpcMigCtx->originhost(), msg.appid(), msg.id());
                     }
 
                     faabric::planner::getPlannerClient().notifyServiceReady(
                       msg.rpcservice(), msg.appid(), msg.id());
-
                 }
 
-                SPDLOG_INFO("RPC - Deserialised migration state for msg {}", msg.id());
+                if (!rpcMigCtx->originhost().empty() &&
+                    rpcMigCtx->originhost() != conf.endpointHost) {
+                    // Send pending requests...
+                    for (const auto& pendingReq : rpcMigCtx->pendingrequests()) {
+                        if (pendingReq.cachedstatuscode() != -1) {
+                            continue;
+                        }
+
+                        faabric::RpcFetchRequest fetch;
+                        fetch.set_requestid(pendingReq.requestid());
+                        fetch.set_replyhost(conf.endpointHost);
+                        fetch.set_replyport(RPC_ASYNC_PORT);
+
+                        try {
+                            faabric::rpc::RpcTransportClient client(
+                              rpcMigCtx->originhost(),
+                              RPC_ASYNC_PORT,
+                              RPC_SYNC_PORT,
+                              5000);
+
+                            client.asyncSendFetch(fetch);
+
+                            SPDLOG_DEBUG("RPC - Sent FETCH for restored request {} to {}",
+                                        pendingReq.requestid(),
+                                        rpcMigCtx->originhost());
+                        } catch (const std::exception& e) {
+                            SPDLOG_ERROR("RPC - Failed to send FETCH for requestId={}: {}",
+                                        pendingReq.requestid(),
+                                        e.what());
+                        }
+                    }
+                }
             }
             
             returnValue =

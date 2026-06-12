@@ -97,6 +97,71 @@ std::shared_ptr<RpcContext> RpcContextRegistry::getContextForRequest(
     return ctxIt == contextByKey.end() ? nullptr : ctxIt->second;
 }
 
+vvoid RpcContextRegistry::registerRestoredContext(
+  int32_t appId,
+  int32_t msgId,
+  std::shared_ptr<RpcContext> ctx,
+  const faabric::RpcMigrationState& migrationCtx)
+{
+    if (!ctx) {
+        throw std::runtime_error("Cannot register null restored RpcContext");
+    }
+
+    std::vector<faabric::RpcResponse> locallyCachedResponses;
+
+    {
+        faabric::util::FullLock lock(mx);
+
+        RpcAppMsgIds owner{ .appId = appId, .msgId = msgId };
+
+        contextByKey[owner] = ctx;
+
+        const auto now = std::chrono::steady_clock::now();
+
+        for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+            const uint32_t requestId = pendingReq.requestid();
+
+            std::chrono::milliseconds ttl = kDefaultRpcRequestTtl;
+            if (pendingReq.timeoutremaining() > 0) {
+                ttl = std::chrono::milliseconds(pendingReq.timeoutremaining());
+            }
+
+            requests[requestId] = InFlightRequest{
+                .owner = owner,
+                .expiresAt = now + ttl,
+            };
+
+            pendingFetches.erase(requestId);
+
+            auto cachedIt = cachedResponses.find(requestId);
+            if (cachedIt != cachedResponses.end()) {
+                locallyCachedResponses.emplace_back(std::move(cachedIt->second));
+                cachedResponses.erase(cachedIt);
+            }
+
+            SPDLOG_DEBUG(
+              "RPC - Restored request route req={} -> app={} msg={} ttl={}ms",
+              requestId,
+              appId,
+              msgId,
+              ttl.count());
+        }
+
+        SPDLOG_INFO(
+          "RPC - Registered restored context app={} msg={} with {} pending requests",
+          appId,
+          msgId,
+          migrationCtx.pendingrequests_size());
+    }
+
+    // Deliver outside the registry lock.
+    for (const auto& resp : locallyCachedResponses) {
+        SPDLOG_INFO("RPC - Delivering locally cached restored response req={}",
+                    resp.requestid());
+        ctx->onResponseReceived(resp);
+    }
+}
+
 // -----------------------------------
 // request ownership / validity
 // -----------------------------------
@@ -109,6 +174,16 @@ void RpcContextRegistry::registerInFlightRequest(
 {
     faabric::util::FullLock lock(mx);
 
+    registerInFlightRequestUnlocked(requestId, appId, msgId, ttl);
+}
+
+
+void RpcContextRegistry::registerInFlightRequestUnlocked(
+  uint32_t requestId,
+  int32_t appId,
+  int32_t msgId,
+  std::chrono::milliseconds ttl)
+{
     if (ttl.count() <= 0) {
         ttl = kDefaultRpcRequestTtl;
     }

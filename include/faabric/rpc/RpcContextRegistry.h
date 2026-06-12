@@ -1,5 +1,7 @@
 #pragma once
 
+#include <faabric/proto/faabric.pb.h>
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -76,6 +78,12 @@ class RpcContextRegistry
       int32_t msgId,
       std::shared_ptr<faabric::rpc::RpcContext> ctx);
 
+    void registerRestoredContext(
+      int32_t appId,
+      int32_t msgId,
+      std::shared_ptr<RpcContext> ctx,
+      const faabric::RpcMigrationState& migrationCtx);
+
     std::shared_ptr<faabric::rpc::RpcContext> getContext(
       int32_t appId,
       int32_t msgId);
@@ -90,6 +98,12 @@ class RpcContextRegistry
     // -----------------------------------
 
     void registerInFlightRequest(
+      uint32_t requestId,
+      int32_t appId,
+      int32_t msgId,
+      std::chrono::milliseconds ttl = kDefaultRpcRequestTtl);
+
+    void registerInFlightRequestUnlocked(
       uint32_t requestId,
       int32_t appId,
       int32_t msgId,

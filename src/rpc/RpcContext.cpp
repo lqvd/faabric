@@ -220,90 +220,58 @@ void RpcContext::deserializeMigrationState(
 {
     clearLocal();
 
-    {
-        faabric::util::ScopedLock lock(mx);
+    faabric::util::ScopedLock lock(mx);
 
-        int32_t highestChannelId = 0;
+    int32_t highestChannelId = 0;
 
-        for (const auto& channelState : migrationCtx.channels()) {
-            ChannelInfo info = parseChannelInfo(channelState.targeturi());
+    for (const auto& channelState : migrationCtx.channels()) {
+        ChannelInfo info = parseChannelInfo(channelState.targeturi());
 
-            const int32_t channelId = channelState.channelid();
-            channels.emplace(channelId, std::move(info));
+        const int32_t channelId = channelState.channelid();
+        channels.emplace(channelId, std::move(info));
 
-            highestChannelId = std::max(highestChannelId, channelId);
-        }
-
-        nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
-
-        SPDLOG_DEBUG("RPC - Deserialising {} pending requests",
-                    migrationCtx.pendingrequests_size());
-
-        for (const auto& pendingReq : migrationCtx.pendingrequests()) {
-            const uint32_t requestId = pendingReq.requestid();
-            const int32_t channelId = pendingReq.channelid();
-
-            auto chIt = channels.find(channelId);
-            if (chIt == channels.end()) {
-                throw std::runtime_error(
-                fmt::format("RPC migration state references unknown channel {}",
-                            channelId));
-            }
-
-            requestToChannel.emplace(requestId, channelId);
-            getOrCreateTransportLocked(chIt->second);
-
-            RpcOp op;
-            op.channelId = channelId;
-            op.method = pendingReq.method();
-            op.payload = pendingReq.payload();
-            op.retryCount = pendingReq.retrycount();
-            if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
-                op.ready = true;
-                op.response.set_requestid(requestId);
-                op.response.set_statuscode(pendingReq.cachedstatuscode());
-                op.response.set_payload(pendingReq.cachedresponse());
-            }
-            if (pendingReq.timeoutremaining() >= 0) {
-                op.deadline = 
-                  std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(pendingReq.timeoutremaining());
-            }
-            ops.emplace(requestId, std::move(op));
-        }
+        highestChannelId = std::max(highestChannelId, channelId);
     }
 
-    auto& reg = getRpcContextRegistry();
+    nextChannelId.store(highestChannelId + 1, std::memory_order_relaxed);
+
+    SPDLOG_DEBUG("RPC - Deserialising {} pending requests",
+                 migrationCtx.pendingrequests_size());
 
     for (const auto& pendingReq : migrationCtx.pendingrequests()) {
-        reg.registerInFlightRequest(
-          pendingReq.requestid(), ownerAppId, ownerMsgId);
-    }
+        const uint32_t requestId = pendingReq.requestid();
+        const int32_t channelId = pendingReq.channelid();
 
-    reg.registerContext(ownerAppId, ownerMsgId, shared_from_this());
+        auto chIt = channels.find(channelId);
+        if (chIt == channels.end()) {
+            throw std::runtime_error(
+              fmt::format("RPC migration state references unknown channel {}",
+                          channelId));
+        }
 
-    for (const auto& pendingReq : migrationCtx.pendingrequests()) {
+        requestToChannel.emplace(requestId, channelId);
+        getOrCreateTransportLocked(chIt->second);
+
+        RpcOp op;
+        op.channelId = channelId;
+        op.method = pendingReq.method();
+        op.payload = pendingReq.payload();
+        op.retryCount = pendingReq.retrycount();
+
         if (pendingReq.cachedstatuscode() != kNoCachedRespStatus) {
-            // already restored as ready
-            continue;
+            op.ready = true;
+            op.response.set_requestid(requestId);
+            op.response.set_statuscode(pendingReq.cachedstatuscode());
+            op.response.set_payload(pendingReq.cachedresponse());
         }
 
-        faabric::RpcFetchRequest fetch;
-        fetch.set_requestid(pendingReq.requestid());
-        fetch.set_replyhost(faabric::util::getSystemConfig().endpointHost);
-        fetch.set_replyport(RPC_ASYNC_PORT);
-
-        try {
-            RpcTransportClient client(
-                migrationCtx.originhost(),
-                RPC_ASYNC_PORT,
-                RPC_SYNC_PORT,
-                5000);
-            client.asyncSendFetch(fetch);
-        } catch (const std::exception& e) {
-            SPDLOG_ERROR("RPC - Failed to send FETCH for requestId={}: {}",
-                        pendingReq.requestid(), e.what());
+        if (pendingReq.timeoutremaining() >= 0) {
+            op.deadline =
+              std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(pendingReq.timeoutremaining());
         }
+
+        ops.emplace(requestId, std::move(op));
     }
 }
 
